@@ -31,7 +31,6 @@ import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
 import zed.rainxch.githubstore.ranking.SearchScore
 import zed.rainxch.githubstore.topics.TopicCodeMapper
-import zed.rainxch.githubstore.util.AssetPlatform
 import zed.rainxch.githubstore.util.FeatureFlags
 import zed.rainxch.githubstore.util.formatRecency
 import zed.rainxch.githubstore.util.queryHash
@@ -304,7 +303,7 @@ class GitHubSearchClient(
                             val releases = fetchAllReleases(repo.fullName, userToken)
                             val latest = releases.firstOrNull { !it.draft && !it.prerelease }
                                 ?: return@async null
-                            val platformFlags = detectPlatforms(latest)
+                            val platformFlags = detectPlatforms(releases)
                             if (platformFlags.none { it.value }) return@async null
                             if (platform != null && platformFlags[platform] != true) return@async null
                             val downloadCount = releases.sumOf { r -> r.assets.sumOf { it.downloadCount } }
@@ -366,7 +365,7 @@ class GitHubSearchClient(
                     val releases = fetchAllReleases(repo.fullName, userToken)
                     val latest = releases.firstOrNull { !it.draft && !it.prerelease }
                         ?: return@async null
-                    val platformFlags = detectPlatforms(latest)
+                    val platformFlags = detectPlatforms(releases)
                     if (platformFlags.none { it.value }) return@async null
                     if (platform != null && platformFlags[platform] != true) return@async null
                     val downloadCount = releases.sumOf { r -> r.assets.sumOf { it.downloadCount } }
@@ -453,7 +452,7 @@ class GitHubSearchClient(
         val releases = fetchAllReleases(fullName, userToken)
         val latest = releases.firstOrNull { !it.draft && !it.prerelease }
             ?: return RefreshResult.NoUsableRelease(repo)
-        val platformFlags = detectPlatforms(latest)
+        val platformFlags = detectPlatforms(releases)
         val downloadCount = releases.sumOf { r -> r.assets.sumOf { it.downloadCount } }
         return RefreshResult.Ok(RepoWithRelease(repo, latest, platformFlags, downloadCount))
     }
@@ -527,8 +526,8 @@ class GitHubSearchClient(
         object TransientFailure : RefreshResult()
     }
 
-    private fun detectPlatforms(release: GitHubRelease): Map<String, Boolean> =
-        AssetPlatform.installFlags(release.assets.map { it.name })
+    private fun detectPlatforms(releases: List<GitHubRelease>): Map<String, Boolean> =
+        PlatformAvailability.flags(releases)
 
     // Returns a map of repo_id → search_score for the repos just upserted,
     // so syncToMeilisearch can include the score on its POST payload
