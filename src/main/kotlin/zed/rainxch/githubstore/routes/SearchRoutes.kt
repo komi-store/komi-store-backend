@@ -332,6 +332,7 @@ private fun zed.rainxch.githubstore.db.MeiliRepoHit.toRepoResponse() = RepoRespo
     hasInstallersWindows = has_installers_windows,
     hasInstallersMacos = has_installers_macos,
     hasInstallersLinux = has_installers_linux,
+    platformReleases = platform_releases,
     trendingScore = trending_score,
     popularityScore = popularity_score,
 )

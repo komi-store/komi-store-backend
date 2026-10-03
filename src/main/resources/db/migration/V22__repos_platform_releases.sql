@@ -1,0 +1,11 @@
+-- Newest stable release per platform, as JSON text:
+--   {"android": {"tag": "3.4.13-android", "publishedAt": "2026-09-15T..."},
+--    "windows": {"tag": "v3.4.8", "publishedAt": "2026-09-14T..."}}
+-- Written by the backend ingest (PlatformAvailability) and the fetcher's
+-- db_writer with the same rule as the has_installers_* flags; surfaced as
+-- RepoResponse.platformReleases. TEXT rather than JSONB: nothing queries into
+-- it, every reader decodes the whole value.
+--
+-- Nullable: NULL = not re-indexed yet; clients fall back to latest_release_*.
+-- IF NOT EXISTS so the no-Flyway runner re-applies cleanly (matches V20/V21).
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS platform_releases TEXT;

@@ -162,6 +162,8 @@ data class MeiliRepoHit(
     val has_installers_windows: Boolean = false,
     val has_installers_macos: Boolean = false,
     val has_installers_linux: Boolean = false,
+    // Same shape as RepoResponse.platformReleases; null on docs synced before V22.
+    val platform_releases: Map<String, zed.rainxch.githubstore.model.PlatformRelease>? = null,
     val trending_score: Double? = null,
     val popularity_score: Double? = null,
     // R5/R13: last commit timestamp; piped from GitHub pushed_at.

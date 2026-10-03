@@ -70,7 +70,7 @@ class SearchRepository {
                        language, topics,
                        latest_release_date, latest_release_tag, download_count,
                        has_installers_android, has_installers_windows,
-                       has_installers_macos, has_installers_linux,
+                       has_installers_macos, has_installers_linux, platform_releases,
                        trending_score, popularity_score, search_score,
                        updated_at_gh, created_at_gh, pushed_at_gh
                 FROM repos
@@ -143,6 +143,7 @@ class SearchRepository {
                             hasInstallersWindows = rs.getBoolean("has_installers_windows"),
                             hasInstallersMacos = rs.getBoolean("has_installers_macos"),
                             hasInstallersLinux = rs.getBoolean("has_installers_linux"),
+                            platformReleases = PlatformReleasesColumn.decode(rs.getString("platform_releases")),
                             // REAL (FLOAT4) columns materialise as java.lang.Float —
                             // `as? Double` silently nulls. Number bridge handles both.
                             trendingScore = (rs.getObject("trending_score") as? Number)?.toDouble(),

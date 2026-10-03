@@ -102,6 +102,7 @@ object DatabaseFactory {
             "V19__feed_exposure.sql",
             "V20__repo_daily_snapshot_and_archived.sql",
             "V21__repos_daily_stars.sql",
+            "V22__repos_platform_releases.sql",
         )
         for (migration in migrations) {
             val rawSql = this::class.java.classLoader

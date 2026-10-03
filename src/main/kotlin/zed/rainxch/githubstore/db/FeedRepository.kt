@@ -107,7 +107,7 @@ class FeedRepository {
                        r.language, r.topics,
                        r.latest_release_date, r.latest_release_tag, r.download_count,
                        r.has_installers_android, r.has_installers_windows,
-                       r.has_installers_macos, r.has_installers_linux,
+                       r.has_installers_macos, r.has_installers_linux, r.platform_releases,
                        r.trending_score, r.popularity_score, r.daily_stars,
                        r.updated_at_gh, r.created_at_gh, r.pushed_at_gh,
                        s.star_velocity_ewma, s.dl_velocity_ewma,
@@ -327,7 +327,7 @@ class FeedRepository {
                        language, topics,
                        latest_release_date, latest_release_tag, download_count,
                        has_installers_android, has_installers_windows,
-                       has_installers_macos, has_installers_linux,
+                       has_installers_macos, has_installers_linux, platform_releases,
                        trending_score, popularity_score, search_score, daily_stars,
                        updated_at_gh, created_at_gh, pushed_at_gh
                 FROM repos
@@ -396,6 +396,7 @@ class FeedRepository {
             hasInstallersWindows = getBoolean("has_installers_windows"),
             hasInstallersMacos = getBoolean("has_installers_macos"),
             hasInstallersLinux = getBoolean("has_installers_linux"),
+            platformReleases = PlatformReleasesColumn.decode(getString("platform_releases")),
             // Columns are REAL (FLOAT4) — JDBC materialises java.lang.Float,
             // so a safe-cast to Double silently nulls every value. Go through
             // Number to survive both Float and any future DOUBLE PRECISION

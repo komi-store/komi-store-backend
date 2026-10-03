@@ -26,7 +26,9 @@ import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.upsert
 import org.slf4j.LoggerFactory
+import zed.rainxch.githubstore.db.PlatformReleasesColumn
 import zed.rainxch.githubstore.db.Repos
+import zed.rainxch.githubstore.model.PlatformRelease
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
 import zed.rainxch.githubstore.ranking.SearchScore
@@ -303,11 +305,13 @@ class GitHubSearchClient(
                             val releases = fetchAllReleases(repo.fullName, userToken)
                             val latest = releases.firstOrNull { !it.draft && !it.prerelease }
                                 ?: return@async null
-                            val platformFlags = detectPlatforms(releases)
-                            if (platformFlags.none { it.value }) return@async null
-                            if (platform != null && platformFlags[platform] != true) return@async null
+                            val platformReleases = PlatformAvailability.newestReleases(releases)
+                            if (platformReleases.isEmpty()) return@async null
+                            if (platform != null && platform !in platformReleases) return@async null
                             val downloadCount = releases.sumOf { r -> r.assets.sumOf { it.downloadCount } }
-                            RepoWithRelease(repo, latest, platformFlags, downloadCount)
+                            RepoWithRelease(
+                                repo, latest, PlatformAvailability.flagsOf(platformReleases), downloadCount, platformReleases,
+                            )
                         }
                     }.awaitAll()
                 }.filterNotNull()
@@ -365,11 +369,13 @@ class GitHubSearchClient(
                     val releases = fetchAllReleases(repo.fullName, userToken)
                     val latest = releases.firstOrNull { !it.draft && !it.prerelease }
                         ?: return@async null
-                    val platformFlags = detectPlatforms(releases)
-                    if (platformFlags.none { it.value }) return@async null
-                    if (platform != null && platformFlags[platform] != true) return@async null
+                    val platformReleases = PlatformAvailability.newestReleases(releases)
+                    if (platformReleases.isEmpty()) return@async null
+                    if (platform != null && platform !in platformReleases) return@async null
                     val downloadCount = releases.sumOf { r -> r.assets.sumOf { it.downloadCount } }
-                    RepoWithRelease(repo, latest, platformFlags, downloadCount)
+                    RepoWithRelease(
+                        repo, latest, PlatformAvailability.flagsOf(platformReleases), downloadCount, platformReleases,
+                    )
                 }
             }.awaitAll()
         }.filterNotNull().take(limit)
@@ -452,9 +458,11 @@ class GitHubSearchClient(
         val releases = fetchAllReleases(fullName, userToken)
         val latest = releases.firstOrNull { !it.draft && !it.prerelease }
             ?: return RefreshResult.NoUsableRelease(repo)
-        val platformFlags = detectPlatforms(releases)
+        val platformReleases = PlatformAvailability.newestReleases(releases)
         val downloadCount = releases.sumOf { r -> r.assets.sumOf { it.downloadCount } }
-        return RefreshResult.Ok(RepoWithRelease(repo, latest, platformFlags, downloadCount))
+        return RefreshResult.Ok(
+            RepoWithRelease(repo, latest, PlatformAvailability.flagsOf(platformReleases), downloadCount, platformReleases),
+        )
     }
 
     // Writes a single RepoWithRelease to Postgres + schedules Meili sync.
@@ -526,9 +534,6 @@ class GitHubSearchClient(
         object TransientFailure : RefreshResult()
     }
 
-    private fun detectPlatforms(releases: List<GitHubRelease>): Map<String, Boolean> =
-        PlatformAvailability.flags(releases)
-
     // Returns a map of repo_id → search_score for the repos just upserted,
     // so syncToMeilisearch can include the score on its POST payload
     // (without it, Meili's full-doc replace wipes the worker's score).
@@ -578,6 +583,7 @@ class GitHubSearchClient(
                     it[hasInstallersWindows] = platforms["windows"] ?: false
                     it[hasInstallersMacos] = platforms["macos"] ?: false
                     it[hasInstallersLinux] = platforms["linux"] ?: false
+                    it[platformReleases] = PlatformReleasesColumn.encode(r.platformReleases)
                     it[downloadCount] = r.downloadCount
                     it[searchScore] = scoreToWrite
                     it[pushedAtGh] = repo.pushedAt?.let {
@@ -620,6 +626,7 @@ class GitHubSearchClient(
                     has_installers_windows = r.platformFlags["windows"] ?: false,
                     has_installers_macos = r.platformFlags["macos"] ?: false,
                     has_installers_linux = r.platformFlags["linux"] ?: false,
+                    platform_releases = r.platformReleases.takeIf { it.isNotEmpty() },
                     pushed_at = r.repo.pushedAt,
                     // Meili's POST /documents replaces the whole doc. Omitting this
                     // would wipe the SignalAggregationWorker's most recent score
@@ -638,6 +645,7 @@ class GitHubSearchClient(
         val release: GitHubRelease,
         val platformFlags: Map<String, Boolean>,
         val downloadCount: Long = 0,
+        val platformReleases: Map<String, PlatformRelease> = emptyMap(),
     ) {
         fun toRepoResponse(): RepoResponse {
             val releaseDateStr = release.publishedAt
@@ -678,6 +686,7 @@ class GitHubSearchClient(
                 hasInstallersWindows = platformFlags["windows"] ?: false,
                 hasInstallersMacos = platformFlags["macos"] ?: false,
                 hasInstallersLinux = platformFlags["linux"] ?: false,
+                platformReleases = platformReleases.takeIf { it.isNotEmpty() },
             )
         }
     }
