@@ -19,6 +19,14 @@ data class RepoLicense(
     val name: String? = null,
 )
 
+// One entry of RepoResponse.platformReleases. Same JSON shape is stored in
+// repos.platform_releases and in the Meili doc.
+@Serializable
+data class PlatformRelease(
+    val tag: String? = null,
+    val publishedAt: String? = null,
+)
+
 @Serializable
 data class RepoResponse(
     val id: Long,
@@ -75,6 +83,13 @@ data class RepoResponse(
     val hasInstallersWindows: Boolean = false,
     val hasInstallersMacos: Boolean = false,
     val hasInstallersLinux: Boolean = false,
+    // Newest stable release per platform that ships an installer for it, keyed
+    // android / windows / macos / linux; same rule as the has_installers_*
+    // flags (ingest/PlatformAvailability). Lets clients show the version and
+    // date for the platform they care about when a repo releases platforms
+    // separately (latestReleaseTag is the newest release overall). Null until
+    // the row is re-indexed.
+    val platformReleases: Map<String, PlatformRelease>? = null,
     // null for GitHub-sourced repos (preserves the byte-identical pre-1.9.0
     // wire shape); the forge host ("codeberg.org" etc.) when this response
     // comes from the host-keyed /v1/repo proxy or the /v1/search source=...

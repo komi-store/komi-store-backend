@@ -1,5 +1,6 @@
 package zed.rainxch.githubstore.ingest
 
+import zed.rainxch.githubstore.model.PlatformRelease
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -87,6 +88,31 @@ class PlatformAvailabilityTest {
         )
         assertEquals(false, flags["android"])
         assertEquals(true, flags["linux"])
+    }
+
+    @Test
+    fun each_platform_carries_the_tag_and_date_of_its_own_newest_build() {
+        val releases = PlatformAvailability.newestReleases(
+            listOf(
+                release("3.4.13-android", "2026-09-15T10:00:00Z", "notesnook-arm64-v8a.apk"),
+                release("v3.4.8", "2026-09-14T10:00:00Z", *desktop),
+                release("v3.4.7", "2026-09-01T10:00:00Z", "notesnook-arm64-v8a.apk", *desktop),
+            ),
+        )
+        assertEquals(PlatformRelease("3.4.13-android", "2026-09-15T10:00:00Z"), releases["android"])
+        assertEquals(PlatformRelease("v3.4.8", "2026-09-14T10:00:00Z"), releases["windows"])
+        assertEquals(PlatformRelease("v3.4.8", "2026-09-14T10:00:00Z"), releases["linux"])
+    }
+
+    @Test
+    fun a_dropped_platform_has_no_release_entry() {
+        val releases = PlatformAvailability.newestReleases(
+            listOf(
+                release("v2.0.0", "2026-09-01T00:00:00Z", "app-release.apk"),
+                release("v1.0.0", "2025-08-01T00:00:00Z", "app-setup.exe"),
+            ),
+        )
+        assertEquals(setOf("android"), releases.keys)
     }
 
     @Test

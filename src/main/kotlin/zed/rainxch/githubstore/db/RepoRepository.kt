@@ -112,6 +112,7 @@ class RepoRepository {
             hasInstallersWindows = this[Repos.hasInstallersWindows],
             hasInstallersMacos = this[Repos.hasInstallersMacos],
             hasInstallersLinux = this[Repos.hasInstallersLinux],
+            platformReleases = PlatformReleasesColumn.decode(this[Repos.platformReleases]),
         )
     }
 

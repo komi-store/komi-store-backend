@@ -27,6 +27,8 @@ object Repos : Table("repos") {
     val hasInstallersWindows = bool("has_installers_windows").default(false)
     val hasInstallersMacos = bool("has_installers_macos").default(false)
     val hasInstallersLinux = bool("has_installers_linux").default(false)
+    // RepoResponse.platformReleases as JSON text (V22); see PlatformReleasesColumn.
+    val platformReleases = text("platform_releases").nullable()
     val installCount = integer("install_count").default(0)
     val installSuccessRate = float("install_success_rate").nullable()
     val viewCount7d = integer("view_count_7d").default(0)
