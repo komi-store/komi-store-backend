@@ -243,13 +243,13 @@ fun Route.internalRoutes(
         // One-shot platform-flag re-index. Candidate set = any row with at least
         // one installer flag set, because the contract realignment can have
         // produced a false-positive on android (Alpine `.apk`), windows (`.msix`),
-        // or linux (`.flatpak`) — and the fetcher's monotonic OR can only flip a
+        // or linux (`.flatpak`) — and the fetcher's old monotonic OR could only flip a
         // flag ON, never clear it. Re-fetch each, re-run detectPlatforms (now
         // isAndroidApk-aware + client-exact extension sets) and persist: the
         // Exposed upsert OVERWRITES all four flags, so stale trues get cleared and
         // every platform realigns in one pass. False-NEGATIVES (e.g. a
         // `.pkg.tar.zst`-only row that the old linux set missed) self-heal via the
-        // fixed fetcher's next daily OR-accumulating run, so they're not in scope
+        // fetcher's next daily run, so they're not in scope
         // here. `clearInstallersOnNoRelease=true` also zeroes the flags for rows
         // whose stable release has since vanished (NoUsableRelease/Gone/Archived),
         // which the metadata-only fallback paths would otherwise leave stale.
