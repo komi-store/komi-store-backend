@@ -1,6 +1,7 @@
 package zed.rainxch.githubstore.ingest
 
 import io.ktor.client.*
+import io.ktor.client.engine.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
@@ -25,6 +26,8 @@ class GitHubResourceClient(
     // that window we never substitute a pool token for a rate-limited user
     // token — the pool belongs to the fetcher then.
     private val isQuietWindow: () -> Boolean = { false },
+    // Tests pass a MockEngine; production uses CIO.
+    private val engine: HttpClientEngine? = null,
 ) {
     private val log = LoggerFactory.getLogger(GitHubResourceClient::class.java)
 
@@ -32,7 +35,7 @@ class GitHubResourceClient(
     // first request — tests that wire this client via Koin without driving
     // a real HTTP call avoid leaking the engine into the JVM shutdown path.
     private val http: HttpClient by lazy {
-        HttpClient(CIO) {
+        HttpClient(engine ?: CIO.create()) {
             install(HttpTimeout) {
                 requestTimeoutMillis = 15_000
                 connectTimeoutMillis = 5_000
@@ -195,6 +198,20 @@ class GitHubResourceClient(
                 ttlSeconds = ttlSeconds,
             )
             return Result.Hit(body, status, contentType)
+        }
+
+        // A rate limit (primary or secondary) says nothing about the resource.
+        // Caching it as a negative entry overwrote the last good body and served
+        // 403 to everyone for the negative TTL; this hit every anonymous cache
+        // miss during the fetcher's quiet window, when only GITHUB_TOKEN is used
+        // and no pool retry happens. Serve the last good copy instead, else an
+        // upstream error (502) so the client falls back to GitHub directly.
+        if (isRateLimited(status, response.headers)) {
+            log.warn("Upstream rate-limited: url={} status={}", upstreamUrl, status)
+            if (existingBody != null && existingStatus in 200..299) {
+                return Result.StaleFallback(existingBody, existingStatus!!, existingContentType ?: contentType)
+            }
+            return Result.UpstreamError("upstream_rate_limited")
         }
 
         // 401 from upstream is treated as a transient upstream error rather
