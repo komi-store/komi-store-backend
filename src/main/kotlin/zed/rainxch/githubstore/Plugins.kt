@@ -22,6 +22,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.UUID
 import zed.rainxch.githubstore.routes.ADMIN_BASIC_AUTH
+import zed.rainxch.githubstore.routes.OAUTH_GITHUB_RATE_LIMIT_RESPONSE
 import zed.rainxch.githubstore.util.ApiError
 import kotlinx.serialization.json.Json
 import org.slf4j.event.Level
@@ -376,15 +377,13 @@ fun Application.configureHTTP() {
         // body. Replace that with a JSON body the client can parse + display
         // ("rate_limited" + retry_after seconds). The Retry-After header set
         // by the RateLimit plugin is preserved on the response.
+        //
+        // /v1/oauth/exchange is the exception: it writes its own actionable
+        // `github_rate_limit` body + Retry-After (a GitHub-side throttle, not
+        // our edge limiter). respondRateLimitedEnvelope leaves that response
+        // untouched by checking the route's marker attribute.
         status(HttpStatusCode.TooManyRequests) { call, _ ->
-            val retryAfter = call.response.headers[HttpHeaders.RetryAfter]?.toLongOrNull()
-            call.respond(
-                HttpStatusCode.TooManyRequests,
-                ApiError(
-                    error = "rate_limited",
-                    message = if (retryAfter != null) "Retry after ${retryAfter}s" else "Rate limit exceeded",
-                ),
-            )
+            call.respondRateLimitedEnvelope()
         }
         exception<Throwable> { call, cause ->
             val rid = call.attributes.getOrNull(REQUEST_ID_KEY)
@@ -404,4 +403,24 @@ fun Application.configureHTTP() {
             )
         }
     }
+}
+
+// Shared by the app wiring above and the OAuth error-contract tests so the
+// 429 envelope decision can't drift between production and tests.
+//
+// Note: intentionally returns without responding for the OAuth route. Ktor's
+// StatusPages keeps the response body/headers that were already produced in
+// that case (verified by OAuthExchangeErrorContractTest), which is exactly
+// what we need: the route's `github_rate_limit` body and GitHub-derived
+// Retry-After survive instead of being replaced here.
+internal suspend fun ApplicationCall.respondRateLimitedEnvelope() {
+    if (attributes.getOrNull(OAUTH_GITHUB_RATE_LIMIT_RESPONSE) != null) return
+    val retryAfter = response.headers[HttpHeaders.RetryAfter]?.toLongOrNull()
+    respond(
+        HttpStatusCode.TooManyRequests,
+        ApiError(
+            error = "rate_limited",
+            message = if (retryAfter != null) "Retry after ${retryAfter}s" else "Rate limit exceeded",
+        ),
+    )
 }

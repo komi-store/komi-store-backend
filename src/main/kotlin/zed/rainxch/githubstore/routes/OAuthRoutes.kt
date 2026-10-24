@@ -5,6 +5,7 @@ import io.ktor.server.plugins.ratelimit.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.util.AttributeKey
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -73,6 +74,12 @@ private val GITHUB_ERROR_WHITELIST = setOf(
 private val parseJson = Json { ignoreUnknownKeys = true; isLenient = true }
 private val urlBase64 = Base64.getUrlEncoder().withoutPadding()
 private val secureRandom = SecureRandom()
+
+// Read by the global 429 StatusPages handler (Plugins.kt). /v1/oauth/exchange
+// answers a GitHub-side throttle with its own actionable `github_rate_limit`
+// body plus the Retry-After GitHub advertised; the generic edge-limiter
+// envelope (`rate_limited`) must not overwrite either of them.
+internal val OAUTH_GITHUB_RATE_LIMIT_RESPONSE = AttributeKey<Unit>("OAuthGithubRateLimitResponse")
 
 @Serializable
 private data class StateRequest(val state: String, val code_challenge: String)
@@ -238,6 +245,23 @@ fun Route.oauthRoutes(
                             HttpStatusCode.BadRequest,
                             ApiError("github_$safeCode", "GitHub rejected the authorization code"),
                         )
+                    }
+
+                    is OAuthExchangeService.Result.RateLimited -> {
+                        // GitHub is throttling the token exchange itself (as
+                        // opposed to our own edge limiter). 429 + Retry-After
+                        // is the actionable contract: the website can back off
+                        // and retry the sign-in instead of forcing the user to
+                        // start a new flow blind. The state row was already
+                        // burned by getDel, so this retry needs a fresh state.
+                        call.attributes.put(OAUTH_GITHUB_RATE_LIMIT_RESPONSE, Unit)
+                        log.info(
+                            "[oauth-exchange] state={} error=github_rate_limit retry_after={}",
+                            statePrefix,
+                            result.retryAfterSeconds,
+                        )
+                        call.response.header(HttpHeaders.RetryAfter, result.retryAfterSeconds.toString())
+                        call.respond(HttpStatusCode.TooManyRequests, ApiError("github_rate_limit"))
                     }
 
                     OAuthExchangeService.Result.UpstreamFailure -> {
