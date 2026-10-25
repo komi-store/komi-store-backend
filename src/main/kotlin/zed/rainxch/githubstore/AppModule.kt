@@ -38,6 +38,11 @@ import zed.rainxch.githubstore.oauth.OAuthEphemeralStore
 import zed.rainxch.githubstore.oauth.OAuthExchangeService
 import zed.rainxch.githubstore.oauth.OAuthServiceAuth
 import zed.rainxch.githubstore.oauth.PostgresOAuthEphemeralStore
+import zed.rainxch.githubstore.reviews.GitHubReviewClient
+import zed.rainxch.githubstore.reviews.PostgresReviewStore
+import zed.rainxch.githubstore.reviews.ReviewIdentity
+import zed.rainxch.githubstore.reviews.ReviewStore
+import zed.rainxch.githubstore.reviews.ReviewsConfig
 
 val appModule = module {
     single { EventRepository() }
@@ -155,4 +160,10 @@ val appModule = module {
         )
     }
     single { OAuthCleanupWorker(store = get(), supervisor = get()) }
+
+    // Ratings and reviews. Identity resolves the caller's own X-GitHub-Token
+    // (never the rotation pool) and caches by an HMAC of it for 10 minutes.
+    single { ReviewsConfig.fromEnv() }
+    single<ReviewStore> { PostgresReviewStore() }
+    single { ReviewIdentity(client = GitHubReviewClient()) }
 }

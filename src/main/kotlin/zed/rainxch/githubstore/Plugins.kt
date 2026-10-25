@@ -312,6 +312,16 @@ fun Application.configureHTTP() {
             rateLimiter(limit = 60, refillPeriod = 1.minutes)
             requestKey(::forwardedFor)
         }
+        // Review writes (reviews, replies, reports; not votes):
+        // 300/hr/IP. Only a backstop against one machine cycling GitHub
+        // accounts -- every write is tied to a 30+ day old GitHub identity
+        // and the per-user limits in ReviewRoutes are the real guard. Kept
+        // generous because mobile carriers put thousands of users behind one
+        // CGNAT IPv4.
+        register(RateLimitName("review-writes")) {
+            rateLimiter(limit = 300, refillPeriod = 1.hours)
+            requestKey(::forwardedFor)
+        }
     }
 
     // Basic Auth for the /v1/internal/dashboard HTML page. Username is
