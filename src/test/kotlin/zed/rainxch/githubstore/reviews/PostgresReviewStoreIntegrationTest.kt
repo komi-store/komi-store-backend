@@ -1,5 +1,7 @@
 package zed.rainxch.githubstore.reviews
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -12,7 +14,6 @@ import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.PostgreSQLContainer
 import zed.rainxch.githubstore.db.DatabaseFactory
 import java.time.Instant
-import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -29,7 +30,6 @@ import kotlin.test.assertTrue
 // With neither, it reports SKIPPED.
 class PostgresReviewStoreIntegrationTest {
 
-    private var container: PostgreSQLContainer<*>? = null
     private val store = PostgresReviewStore()
 
     private val github = { id: Long, owner: String, name: String -> RepoTarget(RepoTarget.GITHUB_HOST, id, owner, name) }
@@ -42,28 +42,44 @@ class PostgresReviewStoreIntegrationTest {
 
     @BeforeTest
     fun setUp() {
-        val externalUrl = System.getenv("TEST_DATABASE_URL")?.takeIf { it.isNotBlank() }
-        val docker = runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)
-        assumeTrue("Neither Docker nor TEST_DATABASE_URL available, skipping", docker || externalUrl != null)
-        if (docker) {
-            container = PostgreSQLContainer("postgres:17-alpine")
-            container!!.start()
-            Database.connect(container!!.jdbcUrl, "org.postgresql.Driver", container!!.username, container!!.password)
-        } else {
-            Database.connect(
-                url = externalUrl!!,
-                driver = "org.postgresql.Driver",
-                user = System.getenv("TEST_DATABASE_USER") ?: "githubstore",
-                password = System.getenv("TEST_DATABASE_PASSWORD") ?: "githubstore",
-            )
-        }
-        DatabaseFactory.runMigrations()
+        assumeTrue("Neither Docker nor TEST_DATABASE_URL available, skipping", database != null)
         sql("TRUNCATE review_moderation_log, review_bans, review_replies, review_reports, review_votes, reviews, review_repos, repos CASCADE")
     }
 
-    @AfterTest
-    fun tearDown() {
-        container?.stop()
+    private companion object {
+        // One database for the whole class, connected on first use; the
+        // container is left to Testcontainers' reaper when the test JVM exits.
+        // Exposed caches its transaction manager per thread, and the
+        // concurrency tests run on shared Dispatchers.IO threads, so a
+        // database connected per test left those threads bound to an earlier
+        // test's stopped container. The pool mirrors DatabaseFactory.hikari.
+        val database: Database? by lazy {
+            val externalUrl = System.getenv("TEST_DATABASE_URL")?.takeIf { it.isNotBlank() }
+            val docker = runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)
+            if (!docker && externalUrl == null) return@lazy null
+            val (url, user, password) = if (docker) {
+                val container = PostgreSQLContainer("postgres:17-alpine").apply { start() }
+                Triple(container.jdbcUrl, container.username, container.password)
+            } else {
+                Triple(
+                    externalUrl!!,
+                    System.getenv("TEST_DATABASE_USER") ?: "githubstore",
+                    System.getenv("TEST_DATABASE_PASSWORD") ?: "githubstore",
+                )
+            }
+            val pool = HikariDataSource(
+                HikariConfig().apply {
+                    driverClassName = "org.postgresql.Driver"
+                    jdbcUrl = url
+                    username = user
+                    this.password = password
+                    maximumPoolSize = 12
+                    isAutoCommit = false
+                    transactionIsolation = "TRANSACTION_REPEATABLE_READ"
+                },
+            )
+            Database.connect(pool).also { DatabaseFactory.runMigrations() }
+        }
     }
 
     private fun sql(statement: String) = transaction {
