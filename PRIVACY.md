@@ -16,7 +16,31 @@ When you sign in inside the GitHub Store client app, the client runs GitHub's de
 
 - The access token GitHub issues passes through the backend in memory only. It is not logged, not cached, not written to a database, not sent to error tracking.
 - The token lives on your device, in the client app, and nowhere else on our side.
-- The GitHub user ID and login that the client derives from the token are used as your account key in the backend's tables (telemetry attribution, future subscription state). They are never sold, shared, or exported.
+- The GitHub user ID and login that the client derives from the token are used as your account key in the backend's tables (telemetry attribution, reviews, future subscription state). They are never sold, shared, or exported.
+
+### Ratings and reviews
+
+Reviews are public by design. This is what the backend handles when you rate or review an app in the client.
+
+**Checking who you are.** Writing a review, voting, reporting and replying need GitHub sign-in. The client sends your GitHub token with those requests, and with the request that loads your own review state. The backend uses the token for GitHub API calls on your behalf: `GET /user` (your GitHub user ID, login, avatar URL and account creation date) and a repository lookup (whether you have push access to the repository you are reviewing or replying on). The token is never logged, stored or sent to error tracking. GitHub's answers are kept in memory for up to 10 minutes so repeated taps don't call GitHub again; that cache is keyed by a keyed hash (HMAC) of the token, not the token itself. The account creation date is used only for the rule that accounts must be at least 30 days old and is not written to the database.
+
+**What is stored, and what is public:**
+
+| Data | Stored | Public |
+|------|--------|--------|
+| Your review: the rating, optional text (up to 2000 characters), and the app version, platform and app label you reviewed | yes | yes |
+| Your GitHub user ID, login and avatar URL, as a snapshot refreshed whenever you write | yes | yes, next to your review |
+| When the review was written and last edited | yes | yes |
+| Votes: which reviews you voted up or down, with your GitHub user ID | yes | only each review's net score; your own votes are shown only to you |
+| Reports: the review, your GitHub user ID, the reason and your optional note (up to 500 characters) | yes | no. Moderators see the reason and note, not who reported |
+| Developer replies: the text, and the replier's GitHub user ID, login and avatar URL | yes | yes |
+| Moderation: why a review was hidden; bans (GitHub user ID and reason); an audit log of every moderation action (the moderator's GitHub user ID, the action, the review and the user it affected, the reason, the time) | yes | no |
+
+Public review lists and rating summaries are served to anyone without sign-in and cached by the CDN for a few minutes, like other public listings. Once something is public, third parties we don't control may copy it.
+
+**Deleting your review.** You can delete your own review from the app at any time, including after a moderator hid it or stopped your account from reviewing. Deleting removes the review, the votes on it, the reports about it and any developer reply from the database right away. CDN copies of public lists expire within about five minutes, and encrypted database backups roll over within 30 days. To remove your votes or reports, or everything tied to your GitHub user ID, email us (see "Your rights").
+
+**Moderation.** A report never hides a review by itself. A small group of moderators (GitHub accounts the operator lists in the backend's configuration, plus the operator) reviews reports and can hide a review, restore it, dismiss its reports, delete it, or stop an account from writing reviews, replies, votes and reports. A hidden review leaves the public list and the rating but stays visible to its author. Every moderation action goes into the audit log.
 
 ### Telemetry events (`POST /v1/events`)
 
@@ -99,6 +123,8 @@ These are hard guarantees. If any of them changes, this document will be updated
 - **Marketing emails without explicit opt-in.** If you don't tick a box, you don't get email.
 - **Precise location.** No GeoIP lookup, no lat/long. At most we know an ISO country code from CDN headers, and we don't store it past the request.
 - **The OAuth access token after the device-flow poll completes.** It passes through the suspending handler and out to the HTTP response; nothing else.
+- **The GitHub token sent with review requests.** It is used for that request's GitHub calls and nothing else; the short-lived identity cache is keyed by a hash of it.
+- **A public record of who voted for or reported a review.** Only each review's net score is public, and the moderation queue doesn't show who reported.
 
 ---
 
@@ -107,7 +133,7 @@ These are hard guarantees. If any of them changes, this document will be updated
 - **Application server, Postgres, Meilisearch:** one VPS in Hetzner's Falkenstein, Germany region (EU).
 - **Error tracking:** Sentry, EU region (Frankfurt).
 - **TLS certificates:** Let's Encrypt (issued from CDN/Caddy on the VPS).
-- **Edge cache:** Gcore CDN. Cached responses are public listings (categories, topics, repo details). The CDN does not see authenticated requests for telemetry or auth — those are sent to the direct origin or pass through uncached. The CDN sees client IPs and request paths for cached endpoints.
+- **Edge cache:** Gcore CDN. Cached responses are public listings (categories, topics, repo details, review lists and rating summaries). Review writes and your own review state are marked `no-store` and are never cached. The CDN does not see authenticated requests for telemetry or auth — those are sent to the direct origin or pass through uncached. The CDN sees client IPs and request paths for cached endpoints.
 
 The operator is based in Estonia. The hosting and processing all happens inside the EU/EEA.
 
@@ -116,6 +142,7 @@ The operator is based in Estonia. The hosting and processing all happens inside 
 ## Who has access
 
 - **Operator (solo developer).** SSH access to the VPS, database access via SSH tunnel, Sentry project access. No team members, no contractors, no analytics vendors.
+- **Review moderators.** GitHub accounts the operator lists as moderators can see the moderation queue (reported and hidden reviews, with report reasons and notes but not who reported) and act on reviews. They have no access to the database or to anything else in this document.
 - **Hosting / infrastructure providers** listed below have access to the data they directly process; none of them are given application data on top of that.
 
 ### Subprocessors today
@@ -151,6 +178,12 @@ This list will be kept current. Adding a subprocessor requires a documented upda
 | Rate-limit IP buckets             | In-memory only; gone on process restart|
 | Sentry events                     | Sentry's default retention for our plan|
 | OAuth access tokens               | Never persisted (in-memory pass-through only) |
+| Reviews and developer replies     | Until the author deletes them or a moderator deletes them |
+| Hidden reviews                    | Until the author or a moderator deletes them |
+| Votes and reports                 | As long as the review they belong to exists |
+| Review bans                       | Until a moderator lifts the ban          |
+| Moderation audit log              | No automatic expiry; kept to handle abuse and appeals |
+| Review identity cache             | In memory only, up to 10 minutes         |
 
 The retention windows above are applied by scheduled cleanup jobs running in the backend itself. Forward-looking paid-feature data (subscription state, encrypted library blobs, push tokens) will have their own retention policies documented here when they ship.
 
@@ -171,6 +204,8 @@ These rights track the rights enumerated in GDPR Articles 15–22. We don't clai
 To exercise any of these, email **privacy@github-store.org** from the email address linked to your GitHub account, or include enough information for us to identify the data (your GitHub login is usually enough, since it's the account key). We aim to respond within 30 days. If we need longer (e.g., a complicated export), we'll tell you why and give a new estimate.
 
 There is no charge for these requests. There is no form. Plain English in the email is fine.
+
+For your own review you don't need to email: delete it from the app at any time. Email for anything else, such as your votes and reports.
 
 ---
 
@@ -206,4 +241,4 @@ This file is checked into the public source repository. Every change to it lives
 - Abuse: `abuse@github-store.org`
 - Security: `security@github-store.org`
 
-Last updated: 2026-04-25
+Last updated: 2026-10-25
