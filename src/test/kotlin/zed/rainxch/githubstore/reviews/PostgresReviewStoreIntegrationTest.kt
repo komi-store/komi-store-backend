@@ -357,4 +357,15 @@ class PostgresReviewStoreIntegrationTest {
             query("SELECT action FROM review_moderation_log WHERE target_user_id = 7 ORDER BY id") { it.getString(1) },
         )
     }
+
+    // ---- summaries ----
+
+    @Test
+    fun `summaries resolve like the public list, in request order`() = runBlocking {
+        store.putReview(github(100, "old-owner", "app"), user(1), input(4))
+        sql("INSERT INTO repos (id, full_name, owner, name, html_url) VALUES (100, 'new-owner/app', 'new-owner', 'app', 'https://github.com/new-owner/app')")
+        val result = store.summaries("github.com", listOf("new-owner" to "app", "nobody" to "here", "OLD-OWNER" to "App"))
+        assertEquals(listOf(1, null, 1), result.map { it?.count })
+        assertEquals(4.0, result[0]!!.average)
+    }
 }

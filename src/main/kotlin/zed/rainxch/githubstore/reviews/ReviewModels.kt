@@ -1,6 +1,7 @@
 package zed.rainxch.githubstore.reviews
 
 import kotlinx.serialization.Serializable
+import zed.rainxch.githubstore.model.RepoRating
 
 // Wire shapes for /v1/reviews. The contract lives in the client repo at
 // docs/agents/reviews.md; change both sides together.
@@ -54,6 +55,13 @@ data class ReviewListResponse(
     val reviews: List<Review>,
     val page: Int,
     val hasMore: Boolean,
+)
+
+// GET /reviews/summaries: keyed by each `r` exactly as sent; repos without
+// visible reviews are left out.
+@Serializable
+data class ReviewSummariesResponse(
+    val summaries: Map<String, RepoRating>,
 )
 
 @Serializable
