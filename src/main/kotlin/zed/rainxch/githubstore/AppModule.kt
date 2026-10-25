@@ -41,6 +41,7 @@ import zed.rainxch.githubstore.oauth.PostgresOAuthEphemeralStore
 import zed.rainxch.githubstore.reviews.GitHubReviewClient
 import zed.rainxch.githubstore.reviews.PostgresReviewStore
 import zed.rainxch.githubstore.reviews.ReviewIdentity
+import zed.rainxch.githubstore.reviews.ReviewModerationStore
 import zed.rainxch.githubstore.reviews.ReviewStore
 import zed.rainxch.githubstore.reviews.ReviewsConfig
 
@@ -164,6 +165,8 @@ val appModule = module {
     // Ratings and reviews. Identity resolves the caller's own X-GitHub-Token
     // (never the rotation pool) and caches by an HMAC of it for 10 minutes.
     single { ReviewsConfig.fromEnv() }
-    single<ReviewStore> { PostgresReviewStore() }
+    single { PostgresReviewStore() }
+    single<ReviewStore> { get<PostgresReviewStore>() }
+    single<ReviewModerationStore> { get<PostgresReviewStore>() }
     single { ReviewIdentity(client = GitHubReviewClient()) }
 }

@@ -28,6 +28,7 @@ import zed.rainxch.githubstore.oauth.OAuthEphemeralStore
 import zed.rainxch.githubstore.oauth.OAuthExchangeService
 import zed.rainxch.githubstore.oauth.OAuthServiceAuth
 import zed.rainxch.githubstore.reviews.ReviewIdentity
+import zed.rainxch.githubstore.reviews.ReviewModerationStore
 import zed.rainxch.githubstore.reviews.ReviewRateLimits
 import zed.rainxch.githubstore.reviews.ReviewStore
 import zed.rainxch.githubstore.reviews.ReviewsConfig
@@ -57,6 +58,7 @@ fun Application.configureRouting() {
     val feedRepository by inject<FeedRepository>()
     val velocityWorker by inject<VelocityAggregationWorker>()
     val reviewStore by inject<ReviewStore>()
+    val reviewModerationStore by inject<ReviewModerationStore>()
     val reviewIdentity by inject<ReviewIdentity>()
     val reviewsConfig by inject<ReviewsConfig>()
 
@@ -112,6 +114,7 @@ fun Application.configureRouting() {
                 config = reviewsConfig,
                 limits = ReviewRateLimits(),
             )
+            reviewModerationRoutes(reviewModerationStore, reviewIdentity, reviewsConfig)
             rateLimit(RateLimitName("badges")) {
                 badgeRoutes(badgeService)
             }

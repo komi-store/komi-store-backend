@@ -6,13 +6,14 @@ import java.util.concurrent.atomic.AtomicInteger
 // route contract (who wrote what, hidden, banned, votes, reports, replies);
 // the real SQL, sorts and aggregate upkeep are covered by
 // PostgresReviewStoreIntegrationTest.
-class InMemoryReviewStore : ReviewStore {
+class InMemoryReviewStore : ReviewStore, ReviewModerationStore {
     private class Stored(val target: RepoTarget, var review: Review)
 
     private val reviews = mutableListOf<Stored>()
     private val votes = mutableMapOf<Pair<String, Long>, Int>()
     private val reports = mutableMapOf<Pair<String, Long>, String>()
     val banned = mutableSetOf<Long>()
+    val moderationLog = mutableListOf<String>()
     val publicPageCalls = AtomicInteger()
     private var nextId = 0
 
@@ -125,7 +126,76 @@ class InMemoryReviewStore : ReviewStore {
         }
     }
 
+    // ---- moderation ----
+
+    override suspend fun moderationQueue(status: ModerationQueueStatus, offset: Int, limit: Int): ModerationPage = synchronized(this) {
+        val matching = reviews.filter {
+            when (status) {
+                ModerationQueueStatus.REPORTED -> reports.keys.any { (id, _) -> id == it.review.id }
+                ModerationQueueStatus.HIDDEN -> it.review.hidden
+            }
+        }
+        val items = matching.drop(offset).take(limit).map { stored ->
+            val reviewReports = reports.filterKeys { it.first == stored.review.id }.values
+                .map { ModerationReport(it, null, "2026-10-25T10:00:00Z") }
+            ModerationQueueItem(
+                review = stored.review,
+                repo = ModerationRepo(stored.target.host, stored.target.owner, stored.target.name),
+                reportCount = reviewReports.size,
+                reports = reviewReports,
+                lastReportedAt = reviewReports.firstOrNull()?.createdAt,
+                hidden = stored.review.hidden,
+                hiddenReason = null,
+            )
+        }
+        ModerationPage(items, hasMore = matching.size > offset + limit)
+    }
+
     fun hideNow(reviewId: String) = synchronized(this) {
         find(reviewId)!!.let { it.review = it.review.copy(hidden = true) }
+    }
+
+    override suspend fun hide(reviewId: String, moderatorId: Long?, reason: String?): Boolean {
+        return synchronized(this) {
+            val stored = find(reviewId) ?: return false
+            stored.review = stored.review.copy(hidden = true)
+            reports.keys.removeIf { it.first == reviewId }
+            moderationLog += "hide $reviewId by $moderatorId: $reason"
+            true
+        }
+    }
+
+    override suspend fun unhide(reviewId: String, moderatorId: Long?): Boolean {
+        return synchronized(this) {
+            val stored = find(reviewId) ?: return false
+            stored.review = stored.review.copy(hidden = false)
+            moderationLog += "unhide $reviewId by $moderatorId"
+            true
+        }
+    }
+
+    override suspend fun dismiss(reviewId: String, moderatorId: Long?): Boolean {
+        return synchronized(this) {
+            find(reviewId) ?: return false
+            reports.keys.removeIf { it.first == reviewId }
+            moderationLog += "dismiss $reviewId by $moderatorId"
+            true
+        }
+    }
+
+    override suspend fun moderatorDelete(reviewId: String, moderatorId: Long?): Boolean = synchronized(this) {
+        val removed = reviews.removeIf { it.review.id == reviewId }
+        if (removed) moderationLog += "delete $reviewId by $moderatorId"
+        removed
+    }
+
+    override suspend fun ban(userId: Long, moderatorId: Long?, reason: String?) = synchronized(this) {
+        banned += userId
+        moderationLog += "ban $userId by $moderatorId: $reason"
+    }
+
+    override suspend fun unban(userId: Long, moderatorId: Long?) = synchronized(this) {
+        banned -= userId
+        moderationLog += "unban $userId by $moderatorId"
     }
 }

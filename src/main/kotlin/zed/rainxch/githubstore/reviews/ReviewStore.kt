@@ -38,6 +38,11 @@ data class MyReviewState(
 // Outcome of a vote or report on one review.
 enum class ItemResult { OK, NOT_FOUND, OWN_REVIEW }
 
+data class ModerationPage(
+    val items: List<ModerationQueueItem>,
+    val hasMore: Boolean,
+)
+
 // Persistence for reviews. Every write keeps review_repos' aggregate in step
 // with the visible reviews inside the same transaction.
 interface ReviewStore {
@@ -82,4 +87,19 @@ interface ReviewStore {
 
     // False when the review is missing or hidden.
     suspend fun deleteReply(reviewId: String): Boolean
+}
+
+// Moderator actions. moderatorId null means the operator's X-Admin-Token.
+// Each one writes review_moderation_log in the same transaction.
+interface ReviewModerationStore {
+    suspend fun moderationQueue(status: ModerationQueueStatus, offset: Int, limit: Int): ModerationPage
+
+    // The Boolean ones return false when the review doesn't exist.
+    suspend fun hide(reviewId: String, moderatorId: Long?, reason: String?): Boolean
+    suspend fun unhide(reviewId: String, moderatorId: Long?): Boolean
+    suspend fun dismiss(reviewId: String, moderatorId: Long?): Boolean
+    suspend fun moderatorDelete(reviewId: String, moderatorId: Long?): Boolean
+
+    suspend fun ban(userId: Long, moderatorId: Long?, reason: String?)
+    suspend fun unban(userId: Long, moderatorId: Long?)
 }

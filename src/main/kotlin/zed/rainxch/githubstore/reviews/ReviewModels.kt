@@ -92,7 +92,56 @@ data class ReplyRequest(
     val text: String? = null,
 )
 
+// Body of moderation hide and ban; reason is optional.
+@Serializable
+data class ModerationReasonRequest(
+    val reason: String? = null,
+)
+
+@Serializable
+data class ModerationRepo(
+    val host: String,
+    val owner: String,
+    val name: String,
+)
+
+@Serializable
+data class ModerationReport(
+    val reason: String,
+    val note: String?,
+    val createdAt: String,
+)
+
+@Serializable
+data class ModerationQueueItem(
+    val review: Review,
+    val repo: ModerationRepo,
+    // The review's reports except dismissed ones: open, or closed by a hide.
+    val reportCount: Int,
+    val reports: List<ModerationReport>,
+    val lastReportedAt: String?,
+    val hidden: Boolean,
+    val hiddenReason: String?,
+)
+
+@Serializable
+data class ModerationQueueResponse(
+    val items: List<ModerationQueueItem>,
+    val page: Int,
+    val hasMore: Boolean,
+)
+
 val REPORT_REASONS = setOf("spam", "offensive", "off_topic", "other")
+
+enum class ModerationQueueStatus(val wire: String) {
+    REPORTED("reported"),
+    HIDDEN("hidden");
+
+    companion object {
+        fun fromWire(value: String?): ModerationQueueStatus? =
+            if (value == null) REPORTED else entries.firstOrNull { it.wire == value }
+    }
+}
 
 enum class ReviewSort(val wire: String) {
     TOP("top"),
