@@ -58,6 +58,10 @@ interface ReviewStore {
         limit: Int,
     ): ReviewPage
 
+    // One aggregate per (owner, name), resolved like publicPage; null when the
+    // repo has no review row.
+    suspend fun summaries(host: String, repos: List<Pair<String, String>>): List<RatingAggregate?>
+
     suspend fun mine(target: RepoTarget, userId: Long): MyReviewState
 
     suspend fun isBanned(userId: Long): Boolean
