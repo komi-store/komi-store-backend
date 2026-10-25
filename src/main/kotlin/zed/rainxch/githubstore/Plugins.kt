@@ -125,6 +125,16 @@ internal suspend fun respondNotFound(call: io.ktor.server.application.Applicatio
     call.respond(HttpStatusCode.NotFound, ApiError("not_found"))
 }
 
+// Marks a call whose 404 carries its own error code (the reviews contract's
+// repo_not_found / review_not_found). The global NotFound handler lets such a
+// body through instead of rewriting it to not_found with an edge-cache header.
+private val KEEP_NOT_FOUND_BODY = AttributeKey<Unit>("KeepNotFoundBody")
+
+internal suspend fun ApplicationCall.respondNotFoundCode(code: String) {
+    attributes.put(KEEP_NOT_FOUND_BODY, Unit)
+    respond(HttpStatusCode.NotFound, ApiError(code))
+}
+
 fun Application.configureHTTP() {
     install(DefaultHeaders) {
         header("X-Engine", "github-store-backend")
@@ -370,6 +380,7 @@ fun Application.configureHTTP() {
         //     analytics + the application log
         //   - short edge cache so repeat scanner hits don't slam origin
         status(HttpStatusCode.NotFound) { call, _ ->
+            if (call.attributes.contains(KEEP_NOT_FOUND_BODY)) return@status
             respondNotFound(call)
         }
         // 429s come out of the RateLimit plugin with Retry-After but an empty
