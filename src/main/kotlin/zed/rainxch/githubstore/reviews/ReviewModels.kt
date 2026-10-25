@@ -76,6 +76,24 @@ data class ReviewWriteRequest(
     val appLabel: String? = null,
 )
 
+@Serializable
+data class VoteRequest(
+    val value: Int? = null,
+)
+
+@Serializable
+data class ReportRequest(
+    val reason: String? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class ReplyRequest(
+    val text: String? = null,
+)
+
+val REPORT_REASONS = setOf("spam", "offensive", "off_topic", "other")
+
 enum class ReviewSort(val wire: String) {
     TOP("top"),
     NEWEST("newest"),

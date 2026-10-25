@@ -91,4 +91,13 @@ class ReviewIdentityTest {
         assertFalse(assertIs<GitHubReviewClient.RepoResult.Ok>(identity.repo(other, "me", "mine")).repo.canPush)
         assertEquals(2, github.calls.get())
     }
+
+    @Test
+    fun `repoById resolves a repo by numeric id with push access`() = runBlocking {
+        val own = assertIs<GitHubReviewClient.RepoResult.Ok>(identity.repoById(token, 44)).repo
+        assertEquals(GitHubRepoAccess(44, "me", "mine", canPush = true), own)
+        assertEquals(GitHubReviewClient.RepoResult.NotFound, identity.repoById(token, 999))
+        identity.repoById(token, 44)
+        assertEquals(2, github.calls.get())
+    }
 }

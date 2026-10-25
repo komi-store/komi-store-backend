@@ -146,6 +146,96 @@ class PostgresReviewStore : ReviewStore {
         true
     }
 
+    // The review row lock serializes votes on one review, so reading the
+    // caller's previous vote and moving score by the difference is exact.
+    override suspend fun vote(reviewId: String, voterId: Long, value: Int): ItemResult = writeTx { c ->
+        val authorId = c.lockVisibleReview(reviewId) ?: return@writeTx ItemResult.NOT_FOUND
+        if (authorId == voterId) return@writeTx ItemResult.OWN_REVIEW
+        val previous = c.currentVote(reviewId, voterId)
+        c.execute(
+            """
+            INSERT INTO review_votes (review_id, voter_id, value) VALUES (?, ?, ?)
+            ON CONFLICT (review_id, voter_id) DO UPDATE SET value = EXCLUDED.value
+            """.trimIndent(),
+            reviewId, voterId, value,
+        )
+        c.addToScore(reviewId, value - previous)
+        ItemResult.OK
+    }
+
+    override suspend fun unvote(reviewId: String, voterId: Long): ItemResult = writeTx { c ->
+        c.lockVisibleReview(reviewId) ?: return@writeTx ItemResult.NOT_FOUND
+        val previous = c.currentVote(reviewId, voterId)
+        c.execute("DELETE FROM review_votes WHERE review_id = ? AND voter_id = ?", reviewId, voterId)
+        c.addToScore(reviewId, -previous)
+        ItemResult.OK
+    }
+
+    // The caller's vote on a review, 0 when none.
+    private fun Connection.currentVote(reviewId: String, voterId: Long): Int =
+        queryOne("SELECT value FROM review_votes WHERE review_id = ? AND voter_id = ?", reviewId, voterId) { it.getInt(1) } ?: 0
+
+    private fun Connection.addToScore(reviewId: String, delta: Int) {
+        if (delta != 0) execute("UPDATE reviews SET score = score + ? WHERE id = ?", delta, reviewId)
+    }
+
+    override suspend fun report(reviewId: String, reporterId: Long, reason: String, note: String?): ItemResult = writeTx { c ->
+        val authorId = c.queryOne("SELECT author_id FROM reviews WHERE id = ? AND hidden_at IS NULL FOR SHARE", reviewId) { it.getLong(1) }
+            ?: return@writeTx ItemResult.NOT_FOUND
+        if (authorId == reporterId) return@writeTx ItemResult.OWN_REVIEW
+        c.execute(
+            "INSERT INTO review_reports (review_id, reporter_id, reason, note) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            reviewId, reporterId, reason, note,
+        )
+        ItemResult.OK
+    }
+
+    override suspend fun reviewRepo(reviewId: String): RepoTarget? = readTx { c ->
+        c.queryOne(
+            """
+            SELECT rr.host, rr.github_id, rr.owner, rr.name
+            FROM reviews r JOIN review_repos rr ON rr.id = r.repo_id
+            WHERE r.id = ? AND r.hidden_at IS NULL
+            """.trimIndent(),
+            reviewId,
+        ) { RepoTarget(it.getString(1), (it.getObject(2) as? Number)?.toLong(), it.getString(3), it.getString(4)) }
+    }
+
+    override suspend fun putReply(reviewId: String, author: GitHubUser, text: String): ReviewReply? = writeTx { c ->
+        c.queryOne("SELECT 1 FROM reviews WHERE id = ? AND hidden_at IS NULL FOR SHARE", reviewId) { true }
+            ?: return@writeTx null
+        val reply = c.queryOne(
+            """
+            INSERT INTO review_replies (review_id, author_id, author_login, author_avatar_url, text)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (review_id) DO UPDATE SET author_id = EXCLUDED.author_id, author_login = EXCLUDED.author_login,
+                author_avatar_url = EXCLUDED.author_avatar_url, text = EXCLUDED.text, updated_at = NOW()
+            RETURNING author_id, author_login, author_avatar_url, text, created_at, updated_at
+            """.trimIndent(),
+            reviewId, author.id, author.login, author.avatarUrl, text,
+        ) {
+            ReviewReply(
+                author = ReviewAuthor(it.getLong(1), it.getString(2), it.getString(3)),
+                text = it.getString(4),
+                createdAt = it.getObject(5, OffsetDateTime::class.java).wire(),
+                updatedAt = it.getObject(6, OffsetDateTime::class.java).wire(),
+            )
+        }
+        c.refreshAuthorSnapshot(author)
+        reply
+    }
+
+    override suspend fun deleteReply(reviewId: String): Boolean = writeTx { c ->
+        c.queryOne("SELECT 1 FROM reviews WHERE id = ? AND hidden_at IS NULL FOR SHARE", reviewId) { true }
+            ?: return@writeTx false
+        c.execute("DELETE FROM review_replies WHERE review_id = ?", reviewId)
+        true
+    }
+
+    // The author of a visible review, with its row locked; null when missing or hidden.
+    private fun Connection.lockVisibleReview(reviewId: String): Long? =
+        queryOne("SELECT author_id FROM reviews WHERE id = ? AND hidden_at IS NULL FOR UPDATE", reviewId) { it.getLong(1) }
+
     // ---- repo rows ----
 
     private data class RepoRow(val id: Long, val aggregate: RatingAggregate)
@@ -323,14 +413,15 @@ class PostgresReviewStore : ReviewStore {
         const val FORGE_MATCH =
             "WHERE github_id IS NULL AND host = ? AND lower(owner) = lower(?) AND lower(name) = lower(?)"
 
-        val REVIEW_SELECT = """
-            SELECT r.id, r.rating, r.text, r.version, r.platform, r.app_label,
+        val REVIEW_COLUMNS = """
+            r.id, r.rating, r.text, r.version, r.platform, r.app_label,
                    r.author_id, r.author_login, r.author_avatar_url,
                    r.created_at, r.updated_at, r.score, r.hidden_at,
                    rp.author_id AS reply_author_id, rp.author_login AS reply_author_login,
                    rp.author_avatar_url AS reply_author_avatar_url, rp.text AS reply_text,
                    rp.created_at AS reply_created_at, rp.updated_at AS reply_updated_at
-            FROM reviews r LEFT JOIN review_replies rp ON rp.review_id = r.id
         """.trimIndent()
+
+        val REVIEW_SELECT = "SELECT $REVIEW_COLUMNS FROM reviews r LEFT JOIN review_replies rp ON rp.review_id = r.id"
     }
 }
