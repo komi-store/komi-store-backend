@@ -37,16 +37,16 @@ jobs:
           restore-keys: gradle-${{ runner.os }}-
 
       - name: Compile
-        run: ./gradlew compileKotlin compileTestKotlin --no-daemon
+        run: ./gradlew compileKotlin compileTestKotlin --no-daemon --warning-mode fail
 
       - name: Validate announcements
-        run: ./gradlew validateAnnouncements --no-daemon
+        run: ./gradlew validateAnnouncements --no-daemon --warning-mode fail
 
       - name: Test
-        run: ./gradlew test --no-daemon
+        run: ./gradlew test --no-daemon --warning-mode fail
 
       - name: Build fat JAR
-        run: ./gradlew buildFatJar --no-daemon
+        run: ./gradlew buildFatJar --no-daemon --warning-mode fail
 
       - name: Upload test report on failure
         if: failure()

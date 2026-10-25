@@ -112,6 +112,9 @@ sourceSets["main"].resources.srcDir(generateBuildInfo)
 
 kotlin {
     jvmToolchain(21)
+    compilerOptions {
+        allWarningsAsErrors.set(true)
+    }
 }
 
 // Hard wall on test runtime so a hung HttpClient / dangling selector
