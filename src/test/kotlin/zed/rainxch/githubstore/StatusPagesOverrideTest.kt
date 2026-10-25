@@ -48,4 +48,26 @@ class StatusPagesOverrideTest {
         assertEquals(HttpStatusCode.NotFound, response.status)
         assertEquals("global-handler", response.bodyAsText())
     }
+
+    @Test
+    fun `respondNotFoundCode keeps its own code past the real NotFound handler`() = testApplication {
+        application {
+            configureSerialization()
+            configureHTTP()
+            routing {
+                get("/coded") {
+                    call.response.header(HttpHeaders.CacheControl, "no-store")
+                    call.respondNotFoundCode("review_not_found")
+                }
+            }
+        }
+
+        val coded = client.get("/coded")
+        assertEquals(HttpStatusCode.NotFound, coded.status)
+        assertEquals("""{"error":"review_not_found","message":null}""", coded.bodyAsText())
+        assertEquals("no-store", coded.headers[HttpHeaders.CacheControl])
+
+        val unmatched = client.get("/nowhere")
+        assertEquals("""{"error":"not_found","message":null}""", unmatched.bodyAsText())
+    }
 }
