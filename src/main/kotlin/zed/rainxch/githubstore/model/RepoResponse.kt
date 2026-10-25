@@ -110,4 +110,8 @@ data class RepoResponse(
     // result; pre-1.9.0 clients ignore the field. The first entry is the
     // canonical home (whichever side has the higher star count today).
     @kotlinx.serialization.SerialName("available_on") val availableOn: List<String> = emptyList(),
+    // Average + count of the repo's visible reviews; null when it has none or
+    // REVIEWS_ENABLED is off. Not stored on `repos` or in Meili: RepoRatings
+    // attaches it on the way out of every route that returns repos.
+    val rating: RepoRating? = null,
 )
