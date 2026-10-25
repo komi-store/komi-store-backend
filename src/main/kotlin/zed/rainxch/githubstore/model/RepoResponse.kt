@@ -27,6 +27,14 @@ data class PlatformRelease(
     val publishedAt: String? = null,
 )
 
+// Average + count of a repo's visible reviews (ratings and reviews feature).
+@Serializable
+data class RepoRating(
+    // Rounded to one decimal.
+    val average: Double,
+    val count: Int,
+)
+
 @Serializable
 data class RepoResponse(
     val id: Long,

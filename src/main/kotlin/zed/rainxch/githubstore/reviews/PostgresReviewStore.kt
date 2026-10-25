@@ -32,27 +32,8 @@ class PostgresReviewStore : ReviewStore, ReviewModerationStore {
         offset: Int,
         limit: Int,
     ): ReviewPage = readTx { c ->
-        val repo = if (host == RepoTarget.GITHUB_HOST) {
-            // The catalog id wins over a name match, so a rename the catalog
-            // already knows about still finds reviews stored under the old name.
-            c.queryOne(
-                """
-                SELECT $AGGREGATE_COLUMNS FROM review_repos
-                WHERE host = 'github.com'
-                  AND (github_id = (SELECT id FROM repos WHERE full_name = ?)
-                       OR (lower(owner) = lower(?) AND lower(name) = lower(?)))
-                ORDER BY (github_id = (SELECT id FROM repos WHERE full_name = ?)) DESC NULLS LAST, updated_at DESC
-                LIMIT 1
-                """.trimIndent(),
-                "$owner/$name", owner, name, "$owner/$name",
-            ) { it.toRepoRow() }
-        } else {
-            c.queryOne(
-                "SELECT $AGGREGATE_COLUMNS FROM review_repos $FORGE_MATCH",
-                host, owner, name,
-            ) { it.toRepoRow() }
-        }
-        if (repo == null) return@readTx ReviewPage(RatingAggregate(), emptyList(), hasMore = false)
+        val repo = c.findPublicRepo(host, owner, name)
+            ?: return@readTx ReviewPage(RatingAggregate(), emptyList(), hasMore = false)
 
         val sql = buildString {
             append(REVIEW_SELECT)
@@ -70,6 +51,30 @@ class PostgresReviewStore : ReviewStore, ReviewModerationStore {
         val rows = c.queryList(sql, *args.toTypedArray()) { it.toReview() }
         ReviewPage(repo.aggregate, rows.take(limit), hasMore = rows.size > limit)
     }
+
+    override suspend fun summaries(host: String, repos: List<Pair<String, String>>): List<RatingAggregate?> = readTx { c ->
+        repos.map { (owner, name) -> c.findPublicRepo(host, owner, name)?.aggregate }
+    }
+
+    // Public-read resolution, no GitHub call. GitHub: the catalog id wins over
+    // a name match, so a rename the catalog already knows about still finds
+    // reviews stored under the old name. Forge: host + owner + name.
+    private fun Connection.findPublicRepo(host: String, owner: String, name: String): RepoRow? =
+        if (host == RepoTarget.GITHUB_HOST) {
+            queryOne(
+                """
+                SELECT $AGGREGATE_COLUMNS FROM review_repos
+                WHERE host = 'github.com'
+                  AND (github_id = (SELECT id FROM repos WHERE full_name = ?)
+                       OR (lower(owner) = lower(?) AND lower(name) = lower(?)))
+                ORDER BY (github_id = (SELECT id FROM repos WHERE full_name = ?)) DESC NULLS LAST, updated_at DESC
+                LIMIT 1
+                """.trimIndent(),
+                "$owner/$name", owner, name, "$owner/$name",
+            ) { it.toRepoRow() }
+        } else {
+            queryOne("SELECT $AGGREGATE_COLUMNS FROM review_repos $FORGE_MATCH", host, owner, name) { it.toRepoRow() }
+        }
 
     override suspend fun mine(target: RepoTarget, userId: Long): MyReviewState = readTx { c ->
         val repo = c.findRepo(target, forUpdate = false)

@@ -460,4 +460,35 @@ class ReviewRoutesTest {
         store.hideNow(id)
         reply(id, """{"text":"hi"}""").assertError(HttpStatusCode.NotFound, "review_not_found")
     }
+
+    // ---- summaries and RepoResponse.rating ----
+
+    @Test
+    fun `summaries return rated repos keyed exactly as sent`() = testApplication {
+        app()
+        putReview("""{"rating":4}""")
+        putReview("""{"rating":5}""", token = MAINTAINER, query = "?host=codeberg.org")
+        val response = client.get("/v1/reviews/summaries?r=Owner/App&r=owner/none&r=bad//x&r=-x/y") {
+            header("X-GitHub-Token", "ghp_ignored")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertEquals("public, max-age=300, s-maxage=900", response.headers[HttpHeaders.CacheControl])
+        val summaries = response.json()["summaries"]!!.jsonObject
+        assertEquals(setOf("Owner/App"), summaries.keys)
+        assertEquals(4.0, summaries["Owner/App"]!!.jsonObject["average"]!!.jsonPrimitive.content.toDouble())
+        assertEquals(1, summaries["Owner/App"]!!.jsonObject["count"]!!.jsonPrimitive.int)
+
+        val forge = client.get("/v1/reviews/summaries?r=owner/app&host=codeberg.org").json()["summaries"]!!.jsonObject
+        assertEquals(5.0, forge["owner/app"]!!.jsonObject["average"]!!.jsonPrimitive.content.toDouble())
+    }
+
+    @Test
+    fun `summaries reject more than 50 repos and unknown hosts`() = testApplication {
+        app()
+        val many = (1..51).joinToString("&") { "r=owner/app$it" }
+        client.get("/v1/reviews/summaries?$many").assertError(HttpStatusCode.BadRequest, "invalid_request")
+        client.get("/v1/reviews/summaries?r=owner/app&host=evil.example").assertError(HttpStatusCode.BadRequest, "invalid_host")
+        val empty = client.get("/v1/reviews/summaries").json()["summaries"]!!.jsonObject
+        assertEquals(0, empty.size)
+    }
 }

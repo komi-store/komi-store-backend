@@ -1,5 +1,6 @@
 package zed.rainxch.githubstore.reviews
 
+import zed.rainxch.githubstore.model.RepoRating
 import kotlin.math.roundToInt
 
 // Rating totals over a repo's VISIBLE reviews (review_repos.review_count,
@@ -38,6 +39,9 @@ data class RatingAggregate(
     // Rounded to one decimal; null when nothing is visible.
     val average: Double?
         get() = if (count <= 0) null else (sum.toDouble() / count * 10).roundToInt() / 10.0
+
+    // The card-sized form on RepoResponse; null when nothing is visible.
+    fun toRepoRating(): RepoRating? = average?.let { RepoRating(average = it, count = count) }
 
     fun toSummary(): RatingSummary = RatingSummary(
         average = average,
