@@ -11,6 +11,7 @@ import zed.rainxch.githubstore.ingest.GitHubResourceClient
 import zed.rainxch.githubstore.match.ForgejoResourceClient
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
+import zed.rainxch.githubstore.reviews.RepoRatings
 import zed.rainxch.githubstore.topics.TopicCodeMapper
 import zed.rainxch.githubstore.util.GitHubIdentifiers
 
@@ -31,6 +32,7 @@ fun Route.repoRoutes(
     repoRepository: RepoRepository,
     resourceClient: GitHubResourceClient,
     forgejoResourceClient: ForgejoResourceClient,
+    repoRatings: RepoRatings,
 ) {
     val lenientJson = Json { ignoreUnknownKeys = true }
 
@@ -57,7 +59,7 @@ fun Route.repoRoutes(
                 return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "Repo not found"))
             }
             call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=300")
-            return@get call.respond(resp)
+            return@get call.respond(repoRatings.attach(resp))
         }
 
         // Fast path: curated DB hit — full RepoResponse with installer flags,
@@ -65,7 +67,7 @@ fun Route.repoRoutes(
         val fromDb = repoRepository.findByOwnerAndName(owner, name)
         if (fromDb != null) {
             call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=300")
-            return@get call.respond(fromDb)
+            return@get call.respond(repoRatings.attach(fromDb))
         }
 
         // Miss: lazy-fetch metadata from GitHub, cache, return a RepoResponse
@@ -104,7 +106,7 @@ fun Route.repoRoutes(
                 } else {
                     call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=300")
                 }
-                call.respond(gh.toMetadataOnlyResponse())
+                call.respond(repoRatings.attach(gh.toMetadataOnlyResponse()))
             }
             is GitHubResourceClient.Result.NegativeHit -> {
                 call.response.header(HttpHeaders.CacheControl, "public, max-age=60, s-maxage=300")

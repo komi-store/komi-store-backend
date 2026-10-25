@@ -14,10 +14,13 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import zed.rainxch.githubstore.configureHTTP
 import zed.rainxch.githubstore.configureSerialization
+import zed.rainxch.githubstore.db.RepoRepository
 import zed.rainxch.githubstore.db.ResourceCacheRepository
+import zed.rainxch.githubstore.ingest.GitHubResourceClient
 import zed.rainxch.githubstore.match.ForgejoResourceClient
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
+import zed.rainxch.githubstore.routes.repoRoutes
 import zed.rainxch.githubstore.routes.reviewRoutes
 import java.time.Instant
 import kotlin.test.Test
@@ -490,5 +493,39 @@ class ReviewRoutesTest {
         client.get("/v1/reviews/summaries?r=owner/app&host=evil.example").assertError(HttpStatusCode.BadRequest, "invalid_host")
         val empty = client.get("/v1/reviews/summaries").json()["summaries"]!!.jsonObject
         assertEquals(0, empty.size)
+    }
+
+    @Test
+    fun `repo responses carry the rating`() = testApplication {
+        val forge = FakeForge()
+        application {
+            configureSerialization()
+            configureHTTP()
+            routing {
+                route("/v1") {
+                    reviewRoutes(
+                        store = store,
+                        identity = ReviewIdentity(GitHubReviewClient(github.engine)),
+                        forgejoResourceClient = forge,
+                        config = ReviewsConfig(enabled = true),
+                        limits = ReviewRateLimits(),
+                        now = { now },
+                    )
+                    repoRoutes(
+                        RepoRepository(),
+                        GitHubResourceClient(cacheRepository = object : ResourceCacheRepository() {}),
+                        forge,
+                        RepoRatings(store, enabled = true),
+                    )
+                }
+            }
+        }
+        val before = client.get("/v1/repo/owner/app?host=codeberg.org").json()
+        assertEquals("null", before["rating"].toString())
+        putReview("""{"rating":2}""", query = "?host=codeberg.org")
+        putReview("""{"rating":5}""", token = MAINTAINER, query = "?host=codeberg.org")
+        val rating = client.get("/v1/repo/owner/app?host=codeberg.org").json()["rating"]!!.jsonObject
+        assertEquals(3.5, rating["average"]!!.jsonPrimitive.content.toDouble())
+        assertEquals(2, rating["count"]!!.jsonPrimitive.int)
     }
 }

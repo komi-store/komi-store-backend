@@ -5,6 +5,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import zed.rainxch.githubstore.feed.FeedService
 import zed.rainxch.githubstore.model.FeedResponse
+import zed.rainxch.githubstore.reviews.RepoRatings
 
 private val VALID_FEED_PLATFORMS = setOf("android", "windows", "macos", "linux")
 private const val MAX_PAGE = 25
@@ -14,7 +15,7 @@ private const val MAX_PAGE = 25
 // (platform, page, day), which is what makes the long shared edge cache
 // correct. Client-side personalization happens on-device against this
 // shared candidate stream; the server never learns who is reading.
-fun Route.feedRoutes(feedService: FeedService) {
+fun Route.feedRoutes(feedService: FeedService, repoRatings: RepoRatings) {
     get("/feed") {
         val platform = call.request.queryParameters["platform"]
         if (platform != null && platform !in VALID_FEED_PLATFORMS) {
@@ -36,7 +37,8 @@ fun Route.feedRoutes(feedService: FeedService) {
         call.response.header(HttpHeaders.CacheControl, "public, max-age=900, s-maxage=3600")
         call.respond(
             FeedResponse(
-                items = result.items,
+                // Attached after FeedService's daily cache, so ratings stay current.
+                items = repoRatings.attach(result.items),
                 page = result.page,
                 hasMore = result.hasMore,
                 generatedAt = result.generatedAt,

@@ -4,11 +4,12 @@ import io.ktor.http.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import zed.rainxch.githubstore.db.RepoRepository
+import zed.rainxch.githubstore.reviews.RepoRatings
 
 private val VALID_BUCKETS = setOf("privacy", "media", "productivity", "networking", "dev-tools")
 private val VALID_PLATFORMS = setOf("android", "windows", "macos", "linux")
 
-fun Route.topicRoutes(repoRepository: RepoRepository) {
+fun Route.topicRoutes(repoRepository: RepoRepository, repoRatings: RepoRatings) {
     get("/topics/{bucket}/{platform}") {
         val bucket = call.parameters["bucket"] ?: return@get call.respond(
             HttpStatusCode.BadRequest, mapOf("error" to "Missing bucket")
@@ -32,6 +33,6 @@ fun Route.topicRoutes(repoRepository: RepoRepository) {
 
         val repos = repoRepository.findByTopicBucket(bucket, platform)
         call.response.header(HttpHeaders.CacheControl, "public, max-age=60, s-maxage=600")
-        call.respond(repos)
+        call.respond(repoRatings.attach(repos))
     }
 }

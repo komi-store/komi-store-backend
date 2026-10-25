@@ -358,7 +358,24 @@ class PostgresReviewStoreIntegrationTest {
         )
     }
 
-    // ---- summaries ----
+    // ---- ratings for repo responses and summaries ----
+
+    @Test
+    fun `ratings look GitHub repos up by id and forge repos by host and name`() = runBlocking {
+        store.putReview(app, user(1), input(4))
+        store.putReview(app, user(2), input(5))
+        val hiddenOnly = github(300, "owner", "hidden")
+        store.hide(store.putReview(hiddenOnly, user(1), input(1)).id, null, null)
+        store.putReview(RepoTarget("codeberg.org", null, "Owner", "App"), user(1), input(2))
+
+        val renamed = github(100, "someone-else", "renamed")
+        val forge = RepoTarget("codeberg.org", null, "owner", "APP")
+        val ratings = store.ratings(listOf(renamed, hiddenOnly, github(999, "x", "y"), forge))
+        assertEquals(RatingAggregate(2, 9, listOf(0, 0, 0, 1, 1)), ratings[renamed])
+        assertEquals(RatingAggregate(1, 2, listOf(0, 1, 0, 0, 0)), ratings[forge])
+        assertEquals(setOf(renamed, forge), ratings.keys, "repos with no visible reviews are absent")
+        assertTrue(store.ratings(emptyList()).isEmpty())
+    }
 
     @Test
     fun `summaries resolve like the public list, in request order`() = runBlocking {

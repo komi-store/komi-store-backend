@@ -58,6 +58,11 @@ interface ReviewStore {
         limit: Int,
     ): ReviewPage
 
+    // Visible-review aggregate per repo for RepoResponse.rating: GitHub
+    // targets by githubId, forge targets by host + owner + name. Repos with
+    // no visible reviews are absent from the map.
+    suspend fun ratings(targets: List<RepoTarget>): Map<RepoTarget, RatingAggregate>
+
     // One aggregate per (owner, name), resolved like publicPage; null when the
     // repo has no review row.
     suspend fun summaries(host: String, repos: List<Pair<String, String>>): List<RatingAggregate?>
