@@ -40,6 +40,7 @@ import zed.rainxch.githubstore.oauth.OAuthServiceAuth
 import zed.rainxch.githubstore.oauth.PostgresOAuthEphemeralStore
 import zed.rainxch.githubstore.reviews.GitHubReviewClient
 import zed.rainxch.githubstore.reviews.PostgresReviewStore
+import zed.rainxch.githubstore.reviews.RepoRatings
 import zed.rainxch.githubstore.reviews.ReviewIdentity
 import zed.rainxch.githubstore.reviews.ReviewModerationStore
 import zed.rainxch.githubstore.reviews.ReviewStore
@@ -169,4 +170,6 @@ val appModule = module {
     single<ReviewStore> { get<PostgresReviewStore>() }
     single<ReviewModerationStore> { get<PostgresReviewStore>() }
     single { ReviewIdentity(client = GitHubReviewClient()) }
+    // RepoResponse.rating on every route that returns repos.
+    single { RepoRatings(store = get(), enabled = get<ReviewsConfig>().enabled) }
 }

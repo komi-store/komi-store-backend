@@ -27,6 +27,7 @@ import zed.rainxch.githubstore.mirrors.MirrorStatusRegistry
 import zed.rainxch.githubstore.oauth.OAuthEphemeralStore
 import zed.rainxch.githubstore.oauth.OAuthExchangeService
 import zed.rainxch.githubstore.oauth.OAuthServiceAuth
+import zed.rainxch.githubstore.reviews.RepoRatings
 import zed.rainxch.githubstore.reviews.ReviewIdentity
 import zed.rainxch.githubstore.reviews.ReviewModerationStore
 import zed.rainxch.githubstore.reviews.ReviewRateLimits
@@ -61,31 +62,32 @@ fun Application.configureRouting() {
     val reviewModerationStore by inject<ReviewModerationStore>()
     val reviewIdentity by inject<ReviewIdentity>()
     val reviewsConfig by inject<ReviewsConfig>()
+    val repoRatings by inject<RepoRatings>()
 
     routing {
         rootRoutes()
         route("/v1") {
             healthRoutes(meilisearchClient, announcementsRegistry)
             eventRoutes()
-            categoryRoutes(repoRepository)
-            topicRoutes(repoRepository)
+            categoryRoutes(repoRepository, repoRatings)
+            topicRoutes(repoRepository, repoRatings)
             // Anonymous daily-rotation discovery feed. Sits outside the
             // search rate-limit bucket: it's a catalog read like categories,
             // served from an in-process daily cache + CDN — no GitHub calls,
             // no token, no per-user state.
-            feedRoutes(feedService)
+            feedRoutes(feedService, repoRatings)
             // Tombstones for pre-1.6 auth paths under /repo/. Declared before
             // repoRoutes so the static segments win over /repo/{owner}/{name}.
             deprecationRoutes()
-            repoRoutes(repoRepository, resourceClient, forgejoResourceClient)
+            repoRoutes(repoRepository, resourceClient, forgejoResourceClient, repoRatings)
             rateLimit(RateLimitName("search")) {
-                searchRoutes(meilisearchClient, searchRepository, githubSearchClient, searchMissRepository, searchMetrics, forgejoSearchClient)
+                searchRoutes(meilisearchClient, searchRepository, githubSearchClient, searchMissRepository, searchMetrics, forgejoSearchClient, repoRatings)
                 releasesRoutes(resourceClient, forgejoResourceClient)
                 readmeRoutes(resourceClient)
                 userRoutes(resourceClient)
                 userReposRoutes(resourceClient)
                 userStarredRoutes(resourceClient)
-                repoRefreshRoutes(repoRefreshCoordinator, repoRepository)
+                repoRefreshRoutes(repoRefreshCoordinator, repoRepository, repoRatings)
             }
             authRoutes(deviceClient)
             // OAuth web flow. Each sub-route applies its own rate-limit

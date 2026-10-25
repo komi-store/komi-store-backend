@@ -52,9 +52,37 @@ class PostgresReviewStore : ReviewStore, ReviewModerationStore {
         ReviewPage(repo.aggregate, rows.take(limit), hasMore = rows.size > limit)
     }
 
+    override suspend fun ratings(targets: List<RepoTarget>): Map<RepoTarget, RatingAggregate> = readTx { c ->
+        val result = HashMap<RepoTarget, RatingAggregate>()
+        val github = targets.filter { it.githubId != null }
+        if (github.isNotEmpty()) {
+            val byId = c.queryList(
+                "SELECT $AGGREGATE_COLUMNS, github_id FROM review_repos WHERE github_id = ANY(?) AND review_count > 0",
+                c.createArrayOf("bigint", github.map { it.githubId }.distinct().toTypedArray()),
+            ) { it.getLong("github_id") to it.toRepoRow().aggregate }.toMap()
+            github.forEach { target -> byId[target.githubId]?.let { result[target] = it } }
+        }
+        val forge = targets.filter { it.githubId == null }
+        if (forge.isNotEmpty()) {
+            val byKey = c.queryList(
+                """
+                SELECT $AGGREGATE_COLUMNS, lower(host) || '/' || lower(owner) || '/' || lower(name) AS forge_key
+                FROM review_repos
+                WHERE github_id IS NULL AND review_count > 0
+                  AND lower(host) || '/' || lower(owner) || '/' || lower(name) = ANY(?)
+                """.trimIndent(),
+                c.createArrayOf("text", forge.map { it.forgeKey() }.distinct().toTypedArray()),
+            ) { it.getString("forge_key") to it.toRepoRow().aggregate }.toMap()
+            forge.forEach { target -> byKey[target.forgeKey()]?.let { result[target] = it } }
+        }
+        result
+    }
+
     override suspend fun summaries(host: String, repos: List<Pair<String, String>>): List<RatingAggregate?> = readTx { c ->
         repos.map { (owner, name) -> c.findPublicRepo(host, owner, name)?.aggregate }
     }
+
+    private fun RepoTarget.forgeKey() = "$host/$owner/$name".lowercase()
 
     // Public-read resolution, no GitHub call. GitHub: the catalog id wins over
     // a name match, so a rename the catalog already knows about still finds

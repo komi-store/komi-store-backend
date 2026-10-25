@@ -45,6 +45,16 @@ class InMemoryReviewStore : ReviewStore, ReviewModerationStore {
     private fun aggregateOf(match: (Stored) -> Boolean): RatingAggregate =
         reviews.filter { match(it) && !it.review.hidden }.fold(RatingAggregate()) { acc, r -> acc.transition(null, r.review.rating) }
 
+    override suspend fun ratings(targets: List<RepoTarget>): Map<RepoTarget, RatingAggregate> = synchronized(this) {
+        targets.mapNotNull { target ->
+            val aggregate = aggregateOf { stored ->
+                if (target.githubId != null) stored.target.githubId == target.githubId
+                else stored.target.githubId == null && key(stored.target) == key(target)
+            }
+            if (aggregate.count > 0) target to aggregate else null
+        }.toMap()
+    }
+
     override suspend fun summaries(host: String, repos: List<Pair<String, String>>): List<RatingAggregate?> = synchronized(this) {
         repos.map { (owner, name) -> aggregateOf { key(it.target) == key(host, owner, name) } }
     }
