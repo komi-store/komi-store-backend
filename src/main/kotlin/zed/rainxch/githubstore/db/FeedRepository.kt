@@ -362,8 +362,7 @@ class FeedRepository {
                     .toInt().coerceAtLeast(0)
             } catch (_: Exception) { null }
         }
-        @Suppress("UNCHECKED_CAST")
-        val topics: List<String> = (getArray("topics")?.array as? Array<Any?>)
+        val topics: List<String> = (getArray("topics")?.array as? Array<*>)
             ?.filterIsInstance<String>() ?: emptyList()
 
         return RepoResponse(

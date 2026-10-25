@@ -112,6 +112,9 @@ sourceSets["main"].resources.srcDir(generateBuildInfo)
 
 kotlin {
     jvmToolchain(21)
+    compilerOptions {
+        allWarningsAsErrors.set(true)
+    }
 }
 
 // Hard wall on test runtime so a hung HttpClient / dangling selector
@@ -138,6 +141,8 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
         )
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
     }
+    // V6 skips itself without a pepper, which left the DB tests on a schema production never has.
+    environment("DEVICE_ID_PEPPER", "test-only-pepper")
 }
 
 // Pre-PR validator for announcement JSON drafts. Authors / translators run
