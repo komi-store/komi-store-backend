@@ -6,6 +6,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import zed.rainxch.githubstore.db.RepoRepository
 import zed.rainxch.githubstore.ingest.RepoRefreshCoordinator
+import zed.rainxch.githubstore.reviews.RepoRatings
 import zed.rainxch.githubstore.util.ApiError
 import zed.rainxch.githubstore.util.GitHubIdentifiers
 
@@ -25,6 +26,7 @@ import zed.rainxch.githubstore.util.GitHubIdentifiers
 internal fun Route.repoRefreshRoutes(
     coordinator: RepoRefreshCoordinator,
     repoRepository: RepoRepository,
+    repoRatings: RepoRatings,
 ) {
     post("/repo/{owner}/{name}/refresh") {
         val owner = GitHubIdentifiers.validOwner(call.parameters["owner"])
@@ -46,7 +48,7 @@ internal fun Route.repoRefreshRoutes(
                     outcome.repo.toMetadataOnlyResponse()
                 }
                 call.response.header(HttpHeaders.CacheControl, "no-store")
-                call.respond(response)
+                call.respond(repoRatings.attach(response))
             }
             is RepoRefreshCoordinator.Outcome.Cooldown -> {
                 call.response.header(HttpHeaders.RetryAfter, outcome.retryAfterSeconds.toString())

@@ -13,6 +13,7 @@ import zed.rainxch.githubstore.model.ExploreResponse
 import zed.rainxch.githubstore.model.RepoOwner
 import zed.rainxch.githubstore.model.RepoResponse
 import zed.rainxch.githubstore.model.SearchResponse
+import zed.rainxch.githubstore.reviews.RepoRatings
 import zed.rainxch.githubstore.topics.TopicCodeMapper
 
 private val VALID_PLATFORMS = setOf("android", "windows", "macos", "linux")
@@ -45,6 +46,7 @@ fun Route.searchRoutes(
     searchMissRepository: SearchMissRepository,
     metrics: SearchMetricsRegistry,
     forgejoSearchClient: ForgejoSearchClient,
+    repoRatings: RepoRatings,
 ) {
     get("/search") {
         // Empty `q` is allowed when `sort` is anything other than relevance --
@@ -148,7 +150,7 @@ fun Route.searchRoutes(
             call.response.header(HttpHeaders.CacheControl, "public, max-age=60, s-maxage=300")
             return@get call.respond(
                 SearchResponse(
-                    items = items,
+                    items = repoRatings.attach(items),
                     totalHits = items.size,
                     processingTimeMs = elapsed,
                     source = "forgejo_search",
@@ -180,7 +182,7 @@ fun Route.searchRoutes(
             metrics.recordPostgresFallback(items.size, elapsed)
             call.response.header(HttpHeaders.CacheControl, "public, max-age=15, s-maxage=30")
             return@get call.respond(SearchResponse(
-                items = items,
+                items = repoRatings.attach(items),
                 totalHits = items.size,
                 processingTimeMs = elapsed,
                 source = "postgres",
@@ -237,7 +239,7 @@ fun Route.searchRoutes(
 
             call.response.header(HttpHeaders.CacheControl, "public, max-age=15, s-maxage=30")
             call.respond(SearchResponse(
-                items = items,
+                items = repoRatings.attach(items),
                 totalHits = totalHits,
                 processingTimeMs = result.processingTimeMs,
                 source = source,
@@ -260,7 +262,7 @@ fun Route.searchRoutes(
 
             metrics.recordPostgresFallback(items.size, elapsed)
             call.respond(SearchResponse(
-                items = items,
+                items = repoRatings.attach(items),
                 totalHits = items.size,
                 processingTimeMs = elapsed,
                 source = "postgres",
@@ -297,7 +299,7 @@ fun Route.searchRoutes(
         // the index is updating underneath us.
         call.response.header(HttpHeaders.CacheControl, "public, max-age=30, s-maxage=60")
         call.respond(ExploreResponse(
-            items = result.items,
+            items = repoRatings.attach(result.items),
             page = page,
             hasMore = result.hasMore,
         ))
