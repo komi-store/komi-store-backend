@@ -2,12 +2,16 @@ package zed.rainxch.githubstore.reviews
 
 import zed.rainxch.githubstore.util.FeatureFlags
 
-data class ReviewsConfig(
+// Not a data class: toString must never print adminToken.
+class ReviewsConfig(
     val enabled: Boolean,
     // GitHub accounts younger than this can't write reviews.
     val minAccountAgeDays: Long = DEFAULT_MIN_ACCOUNT_AGE_DAYS,
     // GitHub user ids allowed to moderate (REVIEW_MODERATOR_IDS).
     val moderatorIds: Set<Long> = emptySet(),
+    // The operator's ADMIN_TOKEN, accepted as X-Admin-Token on moderation
+    // routes. Unset means only moderator ids can moderate (never open).
+    val adminToken: String? = null,
 ) {
     companion object {
         const val DEFAULT_MIN_ACCOUNT_AGE_DAYS = 30L
@@ -18,6 +22,7 @@ data class ReviewsConfig(
                 ?.coerceAtLeast(0)
                 ?: DEFAULT_MIN_ACCOUNT_AGE_DAYS,
             moderatorIds = parseIds(System.getenv("REVIEW_MODERATOR_IDS")),
+            adminToken = System.getenv("ADMIN_TOKEN")?.takeIf { it.isNotBlank() },
         )
 
         fun parseIds(raw: String?): Set<Long> =

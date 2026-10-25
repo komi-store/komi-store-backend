@@ -110,9 +110,7 @@ class PostgresReviewStoreIntegrationTest {
     @Test
     fun `editing a hidden review keeps it hidden and out of the aggregate`() = runBlocking {
         val review = store.putReview(app, user(1), input(1))
-        // Moderator hide (the moderation store lands next): flag plus aggregate removal.
-        sql("UPDATE reviews SET hidden_at = NOW() WHERE id = '${review.id}'")
-        sql("UPDATE review_repos SET review_count = 0, rating_sum = 0, stars_1 = 0")
+        store.hide(review.id, moderatorId = 9, reason = "spam")
         val edited = store.putReview(app, user(1), input(5, "changed my mind"))
         assertTrue(edited.hidden)
         assertTrue(edited.edited)
@@ -236,7 +234,7 @@ class PostgresReviewStoreIntegrationTest {
         assertEquals(ItemResult.OK, store.unvote(id, 2))
         assertEquals(ItemResult.OK, store.unvote(id, 2))
         assertEquals(0, score())
-        sql("UPDATE reviews SET hidden_at = NOW() WHERE id = '$id'")
+        store.hide(id, moderatorId = 9, reason = null)
         assertEquals(ItemResult.NOT_FOUND, store.vote(id, 5, 1))
         assertEquals(ItemResult.NOT_FOUND, store.vote("rv_missingMissingMissing0", 5, 1))
     }
@@ -267,7 +265,7 @@ class PostgresReviewStoreIntegrationTest {
         assertTrue(store.deleteReply(id))
         assertEquals(null, store.publicPage("github.com", "owner", "app", ReviewSort.TOP, null, 0, 20).reviews.single().reply)
         assertEquals(app, store.reviewRepo(id))
-        sql("UPDATE reviews SET hidden_at = NOW() WHERE id = '$id'")
+        store.hide(id, null, null)
         assertEquals(null, store.putReply(id, user(7), "late"))
         assertEquals(null, store.reviewRepo(id))
     }
@@ -277,5 +275,86 @@ class PostgresReviewStoreIntegrationTest {
         val forge = RepoTarget("codeberg.org", null, "Owner", "App")
         val id = store.putReview(forge, user(1), input(3)).id
         assertEquals(forge, store.reviewRepo(id))
+    }
+
+    // ---- moderation ----
+
+    @Test
+    fun `hide, unhide and moderator delete keep the aggregate exact`() = runBlocking {
+        val a = store.putReview(app, user(1), input(5)).id
+        val b = store.putReview(app, user(2), input(1)).id
+        store.putReview(app, user(3), input(3))
+        assertTrue(store.hide(b, moderatorId = 9, reason = "spam"))
+        assertTrue(store.hide(b, moderatorId = 9, reason = "spam"), "hiding twice is a no-op")
+        assertAggregateMatchesRecount()
+        assertEquals(2, store.publicPage("github.com", "owner", "app", ReviewSort.TOP, null, 0, 20).aggregate.count)
+        assertTrue(store.unhide(b, moderatorId = null))
+        assertAggregateMatchesRecount()
+        assertTrue(store.moderatorDelete(a, moderatorId = 9))
+        assertAggregateMatchesRecount()
+        assertFalse(store.moderatorDelete(a, moderatorId = 9))
+        assertFalse(store.hide("rv_missingMissingMissing0", 9, null))
+        assertEquals(
+            listOf("hide" to 9L, "hide" to 9L, "unhide" to null, "delete" to 9L),
+            query("SELECT action, moderator_id FROM review_moderation_log ORDER BY id") { rs ->
+                rs.getString(1) to (rs.getObject(2) as? Number)?.toLong()
+            },
+        )
+        assertEquals(1L, query("SELECT target_user_id FROM review_moderation_log WHERE action = 'delete'") { it.getLong(1) }.single())
+    }
+
+    @Test
+    fun `reports queue a review until a moderator hides or dismisses it`() = runBlocking {
+        val first = store.putReview(app, user(1), input(1)).id
+        val second = store.putReview(app, user(2), input(2)).id
+        assertEquals(ItemResult.OK, store.report(first, 3, "spam", "ads"))
+        assertEquals(ItemResult.OK, store.report(first, 3, "other", null))
+        assertEquals(ItemResult.OK, store.report(first, 4, "offensive", null))
+        assertEquals(ItemResult.OWN_REVIEW, store.report(first, 1, "spam", null))
+        sql("UPDATE review_reports SET created_at = NOW() - INTERVAL '1 hour'")
+        assertEquals(ItemResult.OK, store.report(second, 3, "off_topic", null))
+
+        val reported = store.moderationQueue(ModerationQueueStatus.REPORTED, 0, 20).items
+        assertEquals(listOf(second, first), reported.map { it.review.id }, "newest report first")
+        val firstItem = reported.last()
+        assertEquals(2, firstItem.reportCount)
+        assertEquals(setOf("spam", "offensive"), firstItem.reports.map { it.reason }.toSet())
+        assertEquals(ModerationRepo("github.com", "owner", "app"), firstItem.repo)
+
+        assertTrue(store.dismiss(second, moderatorId = 9))
+        assertTrue(store.hide(first, moderatorId = 9, reason = "spam"))
+        assertEquals(0, store.moderationQueue(ModerationQueueStatus.REPORTED, 0, 20).items.size)
+
+        val hidden = store.moderationQueue(ModerationQueueStatus.HIDDEN, 0, 20).items.single()
+        assertEquals(first, hidden.review.id)
+        assertTrue(hidden.hidden)
+        assertTrue(hidden.review.hidden)
+        assertEquals("spam", hidden.hiddenReason)
+        assertEquals(2, hidden.reportCount, "the reports a hide closed still explain it")
+        assertEquals(ItemResult.NOT_FOUND, store.report(first, 5, "spam", null))
+    }
+
+    @Test
+    fun `queue pages report hasMore`() = runBlocking {
+        val ids = (1L..3L).map { store.putReview(app, user(it), input(2)).id }
+        ids.forEach { store.report(it, 99, "spam", null) }
+        val page = store.moderationQueue(ModerationQueueStatus.REPORTED, 0, 2)
+        assertEquals(2, page.items.size)
+        assertTrue(page.hasMore)
+        assertFalse(store.moderationQueue(ModerationQueueStatus.REPORTED, 2, 2).hasMore)
+    }
+
+    @Test
+    fun `ban and unban are idempotent and logged`() = runBlocking {
+        store.ban(7, moderatorId = null, reason = "spam ring")
+        store.ban(7, moderatorId = 9, reason = "again")
+        assertTrue(store.isBanned(7))
+        store.unban(7, moderatorId = 9)
+        store.unban(7, moderatorId = 9)
+        assertFalse(store.isBanned(7))
+        assertEquals(
+            listOf("ban", "ban", "unban", "unban"),
+            query("SELECT action FROM review_moderation_log WHERE target_user_id = 7 ORDER BY id") { it.getString(1) },
+        )
     }
 }

@@ -21,7 +21,7 @@ import java.util.Base64
 // COMMITTED so a writer queued behind that lock sees the previous writer's
 // committed rows instead of failing with a serialization error, which is what
 // the pool's default REPEATABLE READ would do.
-class PostgresReviewStore : ReviewStore {
+class PostgresReviewStore : ReviewStore, ReviewModerationStore {
 
     override suspend fun publicPage(
         host: String,
@@ -236,6 +236,151 @@ class PostgresReviewStore : ReviewStore {
     private fun Connection.lockVisibleReview(reviewId: String): Long? =
         queryOne("SELECT author_id FROM reviews WHERE id = ? AND hidden_at IS NULL FOR UPDATE", reviewId) { it.getLong(1) }
 
+    // ---- moderation ----
+
+    override suspend fun moderationQueue(status: ModerationQueueStatus, offset: Int, limit: Int): ModerationPage = readTx { c ->
+        val select = """
+            SELECT $REVIEW_COLUMNS, r.hidden_reason, rr.host AS repo_host, rr.owner AS repo_owner, rr.name AS repo_name
+            FROM reviews r JOIN review_repos rr ON rr.id = r.repo_id LEFT JOIN review_replies rp ON rp.review_id = r.id
+        """.trimIndent()
+        val sql = when (status) {
+            // Newest open report first.
+            ModerationQueueStatus.REPORTED -> """
+                $select
+                JOIN (SELECT review_id, MAX(created_at) AS last_open FROM review_reports
+                      WHERE resolved_at IS NULL GROUP BY review_id) q ON q.review_id = r.id
+                ORDER BY q.last_open DESC, r.id LIMIT ? OFFSET ?
+            """.trimIndent()
+            ModerationQueueStatus.HIDDEN -> """
+                $select
+                WHERE r.hidden_at IS NOT NULL
+                ORDER BY r.hidden_at DESC, r.id LIMIT ? OFFSET ?
+            """.trimIndent()
+        }
+        val rows = c.queryList(sql, limit + 1, offset) { rs ->
+            QueueRow(
+                review = rs.toReview(),
+                repo = ModerationRepo(rs.getString("repo_host"), rs.getString("repo_owner"), rs.getString("repo_name")),
+                hiddenReason = rs.getString("hidden_reason"),
+            )
+        }
+        val page = rows.take(limit)
+
+        val reports = if (page.isEmpty()) emptyMap() else c.queryList(
+            """
+            SELECT review_id, reason, note, created_at FROM review_reports
+            WHERE review_id = ANY(?) AND resolution IS DISTINCT FROM 'dismissed'
+            ORDER BY created_at DESC
+            """.trimIndent(),
+            c.createArrayOf("text", page.map { it.review.id }.toTypedArray()),
+        ) { rs ->
+            rs.getString(1) to ModerationReport(rs.getString(2), rs.getString(3), rs.getObject(4, OffsetDateTime::class.java).wire())
+        }.groupBy({ it.first }, { it.second })
+
+        val items = page.map { row ->
+            val reviewReports = reports[row.review.id].orEmpty()
+            ModerationQueueItem(
+                review = row.review,
+                repo = row.repo,
+                reportCount = reviewReports.size,
+                reports = reviewReports,
+                lastReportedAt = reviewReports.firstOrNull()?.createdAt,
+                hidden = row.review.hidden,
+                hiddenReason = row.hiddenReason,
+            )
+        }
+        ModerationPage(items, hasMore = rows.size > limit)
+    }
+
+    override suspend fun hide(reviewId: String, moderatorId: Long?, reason: String?): Boolean = writeTx { c ->
+        val (repo, review) = c.lockReviewWithRepo(reviewId) ?: return@writeTx false
+        if (!review.hidden) {
+            c.execute(
+                "UPDATE reviews SET hidden_at = NOW(), hidden_by = ?, hidden_reason = ? WHERE id = ?",
+                moderatorId ?: NULL_BIGINT, reason, reviewId,
+            )
+            c.writeAggregate(repo.id, repo.aggregate, repo.aggregate.transition(review.rating, null))
+        }
+        c.execute(
+            "UPDATE review_reports SET resolved_at = NOW(), resolution = 'hidden' WHERE review_id = ? AND resolved_at IS NULL",
+            reviewId,
+        )
+        c.logModeration(moderatorId, "hide", reviewId, review.authorId, reason)
+        true
+    }
+
+    override suspend fun unhide(reviewId: String, moderatorId: Long?): Boolean = writeTx { c ->
+        val (repo, review) = c.lockReviewWithRepo(reviewId) ?: return@writeTx false
+        if (review.hidden) {
+            c.execute("UPDATE reviews SET hidden_at = NULL, hidden_by = NULL, hidden_reason = NULL WHERE id = ?", reviewId)
+            c.writeAggregate(repo.id, repo.aggregate, repo.aggregate.transition(null, review.rating))
+        }
+        c.logModeration(moderatorId, "unhide", reviewId, review.authorId, null)
+        true
+    }
+
+    override suspend fun dismiss(reviewId: String, moderatorId: Long?): Boolean = writeTx { c ->
+        val authorId = c.queryOne("SELECT author_id FROM reviews WHERE id = ?", reviewId) { it.getLong(1) }
+            ?: return@writeTx false
+        c.execute(
+            "UPDATE review_reports SET resolved_at = NOW(), resolution = 'dismissed' WHERE review_id = ? AND resolved_at IS NULL",
+            reviewId,
+        )
+        c.logModeration(moderatorId, "dismiss", reviewId, authorId, null)
+        true
+    }
+
+    override suspend fun moderatorDelete(reviewId: String, moderatorId: Long?): Boolean = writeTx { c ->
+        val (repo, review) = c.lockReviewWithRepo(reviewId) ?: return@writeTx false
+        // Votes, reports and the reply go with it; the log entry stays.
+        c.execute("DELETE FROM reviews WHERE id = ?", reviewId)
+        if (!review.hidden) {
+            c.writeAggregate(repo.id, repo.aggregate, repo.aggregate.transition(review.rating, null))
+        }
+        c.logModeration(moderatorId, "delete", reviewId, review.authorId, null)
+        true
+    }
+
+    override suspend fun ban(userId: Long, moderatorId: Long?, reason: String?) = writeTx { c ->
+        c.execute(
+            """
+            INSERT INTO review_bans (github_id, reason, banned_by) VALUES (?, ?, ?)
+            ON CONFLICT (github_id) DO UPDATE SET reason = EXCLUDED.reason, banned_by = EXCLUDED.banned_by
+            """.trimIndent(),
+            userId, reason, moderatorId ?: NULL_BIGINT,
+        )
+        c.logModeration(moderatorId, "ban", null, userId, reason)
+    }
+
+    override suspend fun unban(userId: Long, moderatorId: Long?) = writeTx { c ->
+        c.execute("DELETE FROM review_bans WHERE github_id = ?", userId)
+        c.logModeration(moderatorId, "unban", null, userId, null)
+    }
+
+    private class QueueRow(val review: Review, val repo: ModerationRepo, val hiddenReason: String?)
+
+    private class LockedReview(val authorId: Long, val rating: Int, val hidden: Boolean)
+
+    // Locks the review's repo row, then the review: the same order as
+    // putReview, so a moderator and the author can't deadlock.
+    private fun Connection.lockReviewWithRepo(reviewId: String): Pair<RepoRow, LockedReview>? {
+        val repoId = queryOne("SELECT repo_id FROM reviews WHERE id = ?", reviewId) { it.getLong(1) } ?: return null
+        val repo = queryOne("SELECT $AGGREGATE_COLUMNS FROM review_repos WHERE id = ? FOR UPDATE", repoId) { it.toRepoRow() }
+            ?: return null
+        val review = queryOne(
+            "SELECT author_id, rating, hidden_at IS NOT NULL FROM reviews WHERE id = ? FOR UPDATE",
+            reviewId,
+        ) { LockedReview(it.getLong(1), it.getInt(2), it.getBoolean(3)) } ?: return null
+        return repo to review
+    }
+
+    private fun Connection.logModeration(moderatorId: Long?, action: String, reviewId: String?, targetUserId: Long?, reason: String?) {
+        execute(
+            "INSERT INTO review_moderation_log (moderator_id, action, review_id, target_user_id, reason) VALUES (?, ?, ?, ?, ?)",
+            moderatorId ?: NULL_BIGINT, action, reviewId, targetUserId ?: NULL_BIGINT, reason,
+        )
+    }
+
     // ---- repo rows ----
 
     private data class RepoRow(val id: Long, val aggregate: RatingAggregate)
@@ -376,6 +521,7 @@ class PostgresReviewStore : ReviewStore {
         args.forEachIndexed { i, arg ->
             when (arg) {
                 null -> setNull(i + 1, Types.VARCHAR)
+                is SqlNull -> setNull(i + 1, arg.sqlType)
                 is String -> setString(i + 1, arg)
                 is Int -> setInt(i + 1, arg)
                 is Long -> setLong(i + 1, arg)
@@ -404,8 +550,13 @@ class PostgresReviewStore : ReviewStore {
             st.executeUpdate()
         }
 
+    private class SqlNull(val sqlType: Int)
+
     private companion object {
         val random = SecureRandom()
+
+        // Pass for a nullable BIGINT parameter.
+        val NULL_BIGINT = SqlNull(Types.BIGINT)
 
         const val AGGREGATE_COLUMNS =
             "id, review_count, rating_sum, stars_1, stars_2, stars_3, stars_4, stars_5"
