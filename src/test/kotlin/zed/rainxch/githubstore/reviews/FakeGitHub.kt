@@ -7,8 +7,8 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import java.util.concurrent.atomic.AtomicInteger
 
-// Minimal api.github.com for review tests: GET /user and GET /repos/{o}/{n},
-// answered per token. Unknown token -> 401, unknown repo -> 404.
+// Minimal api.github.com for review tests: GET /user, GET /repos/{o}/{n} and
+// GET /repositories/{id}, answered per token. Unknown token -> 401, unknown repo -> 404.
 class FakeGitHub {
     private class FakeRepo(val id: Long, val owner: String, val name: String, val private: Boolean, val pushTokens: Set<String>)
 
@@ -45,10 +45,13 @@ class FakeGitHub {
                 val body = users[token] ?: return@MockEngine respond("""{"message":"Bad credentials"}""", HttpStatusCode.Unauthorized, json)
                 respond(body, HttpStatusCode.OK, json)
             }
-            path.startsWith("/repos/") -> {
+            path.startsWith("/repos/") || path.startsWith("/repositories/") -> {
                 if (token !in users) return@MockEngine respond("""{"message":"Bad credentials"}""", HttpStatusCode.Unauthorized, json)
-                val repo = repos[path.removePrefix("/repos/").lowercase()]
-                    ?: return@MockEngine respond("""{"message":"Not Found"}""", HttpStatusCode.NotFound, json)
+                val repo = if (path.startsWith("/repos/")) {
+                    repos[path.removePrefix("/repos/").lowercase()]
+                } else {
+                    repos.values.firstOrNull { it.id.toString() == path.removePrefix("/repositories/") }
+                } ?: return@MockEngine respond("""{"message":"Not Found"}""", HttpStatusCode.NotFound, json)
                 val push = token in repo.pushTokens
                 respond(
                     """{"id":${repo.id},"name":"${repo.name}","owner":{"login":"${repo.owner}"},"private":${repo.private},""" +

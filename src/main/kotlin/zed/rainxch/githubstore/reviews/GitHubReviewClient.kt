@@ -82,8 +82,15 @@ class GitHubReviewClient(
         }
     }
 
-    suspend fun fetchRepo(token: String, owner: String, name: String): RepoResult {
-        val response = get("https://api.github.com/repos/$owner/$name", token) ?: return RepoResult.Unavailable
+    suspend fun fetchRepo(token: String, owner: String, name: String): RepoResult =
+        repoAt("https://api.github.com/repos/$owner/$name", token)
+
+    // By numeric id, so a repo renamed since its reviews were written still resolves.
+    suspend fun fetchRepoById(token: String, id: Long): RepoResult =
+        repoAt("https://api.github.com/repositories/$id", token)
+
+    private suspend fun repoAt(url: String, token: String): RepoResult {
+        val response = get(url, token) ?: return RepoResult.Unavailable
         val status = response.status.value
         return when {
             status == 200 -> {

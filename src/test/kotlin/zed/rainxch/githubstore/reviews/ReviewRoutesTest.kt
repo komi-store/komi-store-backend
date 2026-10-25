@@ -58,6 +58,7 @@ class ReviewRoutesTest {
     private fun ApplicationTestBuilder.app(
         enabled: Boolean = true,
         reviewLimit: Int = 20,
+        voteLimit: Int = 120,
         moderators: Set<Long> = emptySet(),
     ) {
         application {
@@ -70,7 +71,10 @@ class ReviewRoutesTest {
                         identity = ReviewIdentity(GitHubReviewClient(github.engine)),
                         forgejoResourceClient = FakeForge(),
                         config = ReviewsConfig(enabled = enabled, minAccountAgeDays = 30, moderatorIds = moderators),
-                        reviewLimiter = WindowRateLimiter(reviewLimit, 1.hours),
+                        limits = ReviewRateLimits(
+                            reviews = WindowRateLimiter(reviewLimit, 1.hours),
+                            votes = WindowRateLimiter(voteLimit, 1.hours),
+                        ),
                         now = { now },
                     )
                 }
@@ -140,7 +144,7 @@ class ReviewRoutesTest {
     fun `hidden reviews leave the public list`() = testApplication {
         app()
         val id = putReview("""{"rating":1,"text":"spam"}""").json()["id"]!!.jsonPrimitive.content
-        store.hide(id)
+        store.hideNow(id)
         val body = client.get("/v1/reviews/repo/owner/app").json()
         assertEquals(0, body["summary"]!!.jsonObject["count"]!!.jsonPrimitive.int)
         assertEquals(0, body["reviews"]!!.jsonArray.size)
@@ -284,7 +288,7 @@ class ReviewRoutesTest {
     fun `mine shows the caller their own hidden review`() = testApplication {
         app()
         val id = putReview("""{"rating":1}""").json()["id"]!!.jsonPrimitive.content
-        store.hide(id)
+        store.hideNow(id)
         val mine = client.get("/v1/reviews/repo/owner/app/mine") { header("X-GitHub-Token", USER) }.json()
         assertTrue(mine["review"]!!.jsonObject["hidden"]!!.jsonPrimitive.boolean)
     }
@@ -309,5 +313,151 @@ class ReviewRoutesTest {
         assertEquals(HttpStatusCode.NoContent, client.delete("/v1/reviews/repo/owner/app") { header("X-GitHub-Token", BANNED) }.status)
         val mine = client.get("/v1/reviews/repo/owner/app/mine") { header("X-GitHub-Token", USER) }.json()
         assertNull(mine["review"]?.takeIf { it.toString() != "null" })
+    }
+
+    // ---- votes ----
+
+    private suspend fun ApplicationTestBuilder.writeReviewAsUser(): String =
+        putReview("""{"rating":4,"text":"ok"}""").json()["id"]!!.jsonPrimitive.content
+
+    // value null sends DELETE.
+    private suspend fun ApplicationTestBuilder.vote(id: String, token: String, value: Int? = 1) =
+        client.request("/v1/reviews/item/$id/vote") {
+            method = if (value == null) HttpMethod.Delete else HttpMethod.Put
+            header("X-GitHub-Token", token)
+            if (value != null) {
+                contentType(ContentType.Application.Json)
+                setBody("""{"value":$value}""")
+            }
+        }
+
+    private suspend fun ApplicationTestBuilder.score(): Int =
+        client.get("/v1/reviews/repo/owner/app").json()["reviews"]!!.jsonArray.single().jsonObject["score"]!!.jsonPrimitive.int
+
+    @Test
+    fun `votes set, switch and clear the score, and show in mine`() = testApplication {
+        app()
+        val id = writeReviewAsUser()
+        assertEquals(HttpStatusCode.NoContent, vote(id, MAINTAINER, 1).status)
+        assertEquals(HttpStatusCode.NoContent, vote(id, MAINTAINER, 1).status)
+        assertEquals(1, score())
+        assertEquals(HttpStatusCode.NoContent, vote(id, MAINTAINER, -1).status)
+        assertEquals(-1, score())
+        val mine = client.get("/v1/reviews/repo/owner/app/mine") { header("X-GitHub-Token", MAINTAINER) }.json()
+        assertEquals(-1, mine["votes"]!!.jsonObject[id]!!.jsonPrimitive.int)
+
+        assertEquals(HttpStatusCode.NoContent, vote(id, MAINTAINER, null).status)
+        assertEquals(HttpStatusCode.NoContent, vote(id, MAINTAINER, null).status)
+        assertEquals(0, score())
+    }
+
+    @Test
+    fun `vote error codes`() = testApplication {
+        app()
+        val id = writeReviewAsUser()
+        vote(id, MAINTAINER, 2).assertError(HttpStatusCode.BadRequest, "invalid_request")
+        vote(id, MAINTAINER, 0).assertError(HttpStatusCode.BadRequest, "invalid_request")
+        client.put("/v1/reviews/item/$id/vote") {
+            header("X-GitHub-Token", MAINTAINER)
+            contentType(ContentType.Application.Json)
+            setBody("{}")
+        }.assertError(HttpStatusCode.BadRequest, "invalid_request")
+        vote(id, USER).assertError(HttpStatusCode.Forbidden, "own_review")
+        vote(id, BANNED).assertError(HttpStatusCode.Forbidden, "banned")
+        vote(id, NEWBIE).assertError(HttpStatusCode.Forbidden, "account_too_new")
+        vote("rv_doesNotExist0000000000", MAINTAINER).assertError(HttpStatusCode.NotFound, "review_not_found")
+        vote("not-an-id", MAINTAINER).assertError(HttpStatusCode.NotFound, "review_not_found")
+        client.put("/v1/reviews/item/$id/vote").assertError(HttpStatusCode.Unauthorized, "auth_required")
+        store.hideNow(id)
+        vote(id, MAINTAINER).assertError(HttpStatusCode.NotFound, "review_not_found")
+    }
+
+    @Test
+    fun `per-user vote limit answers 429`() = testApplication {
+        app(voteLimit = 1)
+        val id = writeReviewAsUser()
+        assertEquals(HttpStatusCode.NoContent, vote(id, MAINTAINER).status)
+        vote(id, MAINTAINER, null).assertError(HttpStatusCode.TooManyRequests, "rate_limited")
+    }
+
+    // ---- reports ----
+
+    private suspend fun ApplicationTestBuilder.report(id: String, body: String, token: String = MAINTAINER) =
+        client.post("/v1/reviews/item/$id/report") {
+            header("X-GitHub-Token", token)
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+
+    @Test
+    fun `a report is accepted once per user and never hides the review`() = testApplication {
+        app()
+        val id = writeReviewAsUser()
+        assertEquals(HttpStatusCode.Accepted, report(id, """{"reason":"spam","note":"buy followers"}""").status)
+        assertEquals(HttpStatusCode.Accepted, report(id, """{"reason":"other"}""").status)
+        assertEquals(1, store.reportCount(id))
+        assertEquals(1, client.get("/v1/reviews/repo/owner/app").json()["reviews"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `report error codes`() = testApplication {
+        app()
+        val id = writeReviewAsUser()
+        report(id, """{"reason":"boring"}""").assertError(HttpStatusCode.UnprocessableEntity, "invalid_reason")
+        report(id, """{}""").assertError(HttpStatusCode.UnprocessableEntity, "invalid_reason")
+        report(id, """{"reason":"spam","note":"${"n".repeat(501)}"}""").assertError(HttpStatusCode.UnprocessableEntity, "note_too_long")
+        report(id, """{"reason":"spam"}""", token = USER).assertError(HttpStatusCode.Forbidden, "own_review")
+        report(id, """{"reason":"spam"}""", token = BANNED).assertError(HttpStatusCode.Forbidden, "banned")
+        report(id, """{"reason":"spam"}""", token = NEWBIE).assertError(HttpStatusCode.Forbidden, "account_too_new")
+        report("rv_doesNotExist0000000000", """{"reason":"spam"}""").assertError(HttpStatusCode.NotFound, "review_not_found")
+    }
+
+    // ---- replies ----
+
+    private suspend fun ApplicationTestBuilder.reply(id: String, body: String?, token: String = MAINTAINER) =
+        client.request("/v1/reviews/item/$id/reply") {
+            method = if (body == null) HttpMethod.Delete else HttpMethod.Put
+            header("X-GitHub-Token", token)
+            if (body != null) {
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+        }
+
+    @Test
+    fun `a maintainer replies, edits and deletes the reply`() = testApplication {
+        app()
+        val id = writeReviewAsUser()
+        val created = reply(id, """{"text":"  Thanks!  "}""")
+        assertEquals(HttpStatusCode.OK, created.status)
+        assertEquals("no-store", created.headers[HttpHeaders.CacheControl])
+        val body = created.json()
+        assertEquals("Thanks!", body["text"]!!.jsonPrimitive.content)
+        assertEquals("maintainer", body["author"]!!.jsonObject["login"]!!.jsonPrimitive.content)
+
+        assertEquals(HttpStatusCode.OK, reply(id, """{"text":"Fixed in v2"}""").status)
+        val listed = client.get("/v1/reviews/repo/owner/app").json()["reviews"]!!.jsonArray.single().jsonObject
+        assertEquals("Fixed in v2", listed["reply"]!!.jsonObject["text"]!!.jsonPrimitive.content)
+
+        assertEquals(HttpStatusCode.NoContent, reply(id, null).status)
+        val cleared = client.get("/v1/reviews/repo/owner/app").json()["reviews"]!!.jsonArray.single().jsonObject
+        assertEquals("null", cleared["reply"].toString())
+    }
+
+    @Test
+    fun `reply error codes`() = testApplication {
+        app()
+        val id = writeReviewAsUser()
+        reply(id, """{"text":"hi"}""", token = USER).assertError(HttpStatusCode.Forbidden, "not_maintainer")
+        reply(id, null, token = USER).assertError(HttpStatusCode.Forbidden, "not_maintainer")
+        reply(id, """{"text":"   "}""").assertError(HttpStatusCode.BadRequest, "invalid_request")
+        reply(id, """{"text":"${"t".repeat(2001)}"}""").assertError(HttpStatusCode.UnprocessableEntity, "text_too_long")
+        reply("rv_doesNotExist0000000000", """{"text":"hi"}""").assertError(HttpStatusCode.NotFound, "review_not_found")
+
+        val forge = putReview("""{"rating":3}""", query = "?host=codeberg.org").json()["id"]!!.jsonPrimitive.content
+        reply(forge, """{"text":"hi"}""").assertError(HttpStatusCode.Forbidden, "not_maintainer")
+
+        store.hideNow(id)
+        reply(id, """{"text":"hi"}""").assertError(HttpStatusCode.NotFound, "review_not_found")
     }
 }

@@ -35,6 +35,9 @@ data class MyReviewState(
     val votes: Map<String, Int>,
 )
 
+// Outcome of a vote or report on one review.
+enum class ItemResult { OK, NOT_FOUND, OWN_REVIEW }
+
 // Persistence for reviews. Every write keeps review_repos' aggregate in step
 // with the visible reviews inside the same transaction.
 interface ReviewStore {
@@ -60,4 +63,23 @@ interface ReviewStore {
 
     // False when there was nothing to delete.
     suspend fun deleteReview(target: RepoTarget, userId: Long): Boolean
+
+    // Up (1) or down (-1) votes, one per user per review: voting again
+    // replaces it, unvote is idempotent, and score moves with each change.
+    // NOT_FOUND for a missing or hidden review.
+    suspend fun vote(reviewId: String, voterId: Long, value: Int): ItemResult
+    suspend fun unvote(reviewId: String, voterId: Long): ItemResult
+
+    // One report per user per review; a repeat is a no-op OK.
+    suspend fun report(reviewId: String, reporterId: Long, reason: String, note: String?): ItemResult
+
+    // The repo a visible review belongs to; null when missing or hidden.
+    suspend fun reviewRepo(reviewId: String): RepoTarget?
+
+    // Creates or replaces the review's one reply (author becomes the caller).
+    // Null when the review is missing or hidden.
+    suspend fun putReply(reviewId: String, author: GitHubUser, text: String): ReviewReply?
+
+    // False when the review is missing or hidden.
+    suspend fun deleteReply(reviewId: String): Boolean
 }

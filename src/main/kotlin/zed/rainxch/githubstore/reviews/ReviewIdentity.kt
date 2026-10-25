@@ -36,6 +36,14 @@ class ReviewIdentity(
         return result
     }
 
+    suspend fun repoById(token: String, id: Long): GitHubReviewClient.RepoResult {
+        val key = tokenKey(token) + "|#" + id
+        repos.get(key)?.let { return GitHubReviewClient.RepoResult.Ok(it) }
+        val result = client.fetchRepoById(token, id)
+        if (result is GitHubReviewClient.RepoResult.Ok) repos.put(key, result.repo)
+        return result
+    }
+
     // For tests: the keys held, to assert no raw token is ever one of them.
     internal fun cachedKeys(): Set<String> = users.keys() + repos.keys()
 
