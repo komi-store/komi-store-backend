@@ -2,6 +2,7 @@ package zed.rainxch.githubstore.reviews
 
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 
 // Per-GitHub-user write limit (contract: reviews + replies 20/hr, votes
 // 120/hr, reports 20/hr). The Ktor RateLimit plugin keys before the handler
@@ -37,3 +38,10 @@ class WindowRateLimiter(
         const val SWEEP_THRESHOLD = 10_000
     }
 }
+
+// The contract's per-user limits. Reviews and replies share one bucket.
+class ReviewRateLimits(
+    val reviews: WindowRateLimiter = WindowRateLimiter(limit = 20, window = 1.hours),
+    val votes: WindowRateLimiter = WindowRateLimiter(limit = 120, window = 1.hours),
+    val reports: WindowRateLimiter = WindowRateLimiter(limit = 20, window = 1.hours),
+)

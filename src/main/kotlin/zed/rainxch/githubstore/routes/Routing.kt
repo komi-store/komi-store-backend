@@ -28,10 +28,9 @@ import zed.rainxch.githubstore.oauth.OAuthEphemeralStore
 import zed.rainxch.githubstore.oauth.OAuthExchangeService
 import zed.rainxch.githubstore.oauth.OAuthServiceAuth
 import zed.rainxch.githubstore.reviews.ReviewIdentity
+import zed.rainxch.githubstore.reviews.ReviewRateLimits
 import zed.rainxch.githubstore.reviews.ReviewStore
 import zed.rainxch.githubstore.reviews.ReviewsConfig
-import zed.rainxch.githubstore.reviews.WindowRateLimiter
-import kotlin.time.Duration.Companion.hours
 
 fun Application.configureRouting() {
     val repoRepository by inject<RepoRepository>()
@@ -111,7 +110,7 @@ fun Application.configureRouting() {
                 identity = reviewIdentity,
                 forgejoResourceClient = forgejoResourceClient,
                 config = reviewsConfig,
-                reviewLimiter = WindowRateLimiter(limit = 20, window = 1.hours),
+                limits = ReviewRateLimits(),
             )
             rateLimit(RateLimitName("badges")) {
                 badgeRoutes(badgeService)

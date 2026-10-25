@@ -11,17 +11,22 @@ import zed.rainxch.githubstore.requireMaxBody
 import zed.rainxch.githubstore.respondNotFoundCode
 import zed.rainxch.githubstore.reviews.GitHubReviewClient
 import zed.rainxch.githubstore.reviews.GitHubUser
+import zed.rainxch.githubstore.reviews.ItemResult
 import zed.rainxch.githubstore.reviews.MyReviewResponse
+import zed.rainxch.githubstore.reviews.REPORT_REASONS
+import zed.rainxch.githubstore.reviews.ReplyRequest
 import zed.rainxch.githubstore.reviews.RepoTarget
+import zed.rainxch.githubstore.reviews.ReportRequest
 import zed.rainxch.githubstore.reviews.ReviewEligibility
 import zed.rainxch.githubstore.reviews.ReviewIdentity
 import zed.rainxch.githubstore.reviews.ReviewInput
 import zed.rainxch.githubstore.reviews.ReviewListResponse
+import zed.rainxch.githubstore.reviews.ReviewRateLimits
 import zed.rainxch.githubstore.reviews.ReviewSort
 import zed.rainxch.githubstore.reviews.ReviewStore
 import zed.rainxch.githubstore.reviews.ReviewWriteRequest
 import zed.rainxch.githubstore.reviews.ReviewsConfig
-import zed.rainxch.githubstore.reviews.WindowRateLimiter
+import zed.rainxch.githubstore.reviews.VoteRequest
 import zed.rainxch.githubstore.util.ApiError
 import zed.rainxch.githubstore.util.GitHubIdentifiers
 import java.time.Instant
@@ -30,6 +35,8 @@ private const val WRITE_BODY_MAX = 8L * 1024
 private const val MAX_PAGE = 500
 private const val TEXT_MAX = 2000
 private const val FIELD_MAX = 128
+private const val NOTE_MAX = 500
+private val REVIEW_ID_RE = Regex("^rv_[A-Za-z0-9_-]{22}$")
 private val REVIEW_PLATFORMS = setOf("android", "windows", "macos", "linux")
 
 // Every GitHub token format (classic 40-hex, ghp_/gho_/ghu_/ghs_, github_pat_)
@@ -44,8 +51,7 @@ fun Route.reviewRoutes(
     identity: ReviewIdentity,
     forgejoResourceClient: ForgejoResourceClient,
     config: ReviewsConfig,
-    // Reviews and replies: 20/hr per GitHub user.
-    reviewLimiter: WindowRateLimiter,
+    limits: ReviewRateLimits,
     now: () -> Instant = Instant::now,
 ) {
     // REVIEWS_ENABLED off: register nothing, so every review path is an
@@ -122,7 +128,7 @@ fun Route.reviewRoutes(
                 ReviewEligibility.check(banned, user.createdAt, now(), config.minAccountAgeDays, repo.canPush)?.let {
                     return@put call.reviewError(HttpStatusCode.Forbidden, it.code)
                 }
-                reviewLimiter.tryAcquire(user.id)?.let { return@put call.rateLimited(it) }
+                limits.reviews.tryAcquire(user.id)?.let { return@put call.rateLimited(it) }
 
                 call.respond(store.putReview(repo.target, user, input))
             }
@@ -139,6 +145,112 @@ fun Route.reviewRoutes(
                 call.respond(HttpStatusCode.NoContent)
             }
         }
+
+        route("/item/{reviewId}") {
+            // Up/down votes stay out of the per-IP write bucket (one tap
+            // each, and mobile CGNAT shares IPs); 120/hr per user is the guard.
+            put("/vote") {
+                call.response.header(HttpHeaders.CacheControl, "no-store")
+                val reviewId = call.reviewIdParam() ?: return@put
+                val token = call.requireToken() ?: return@put
+                if (!call.requireMaxBody(WRITE_BODY_MAX)) return@put
+                val value = try {
+                    call.receive<VoteRequest>().value
+                } catch (_: Exception) {
+                    null
+                }?.takeIf { it == 1 || it == -1 }
+                    ?: return@put call.reviewError(HttpStatusCode.BadRequest, "invalid_request")
+                val user = call.resolveUser(identity, token) ?: return@put
+                if (!call.checkWriter(store, user, config, now())) return@put
+                limits.votes.tryAcquire(user.id)?.let { return@put call.rateLimited(it) }
+                when (store.vote(reviewId, user.id, value)) {
+                    ItemResult.OK -> call.respond(HttpStatusCode.NoContent)
+                    ItemResult.NOT_FOUND -> call.reviewError(HttpStatusCode.NotFound, "review_not_found")
+                    ItemResult.OWN_REVIEW -> call.reviewError(HttpStatusCode.Forbidden, "own_review")
+                }
+            }
+
+            // Taking a vote back is allowed even for banned users.
+            delete("/vote") {
+                call.response.header(HttpHeaders.CacheControl, "no-store")
+                val reviewId = call.reviewIdParam() ?: return@delete
+                val token = call.requireToken() ?: return@delete
+                val user = call.resolveUser(identity, token) ?: return@delete
+                limits.votes.tryAcquire(user.id)?.let { return@delete call.rateLimited(it) }
+                when (store.unvote(reviewId, user.id)) {
+                    ItemResult.NOT_FOUND -> call.reviewError(HttpStatusCode.NotFound, "review_not_found")
+                    else -> call.respond(HttpStatusCode.NoContent)
+                }
+            }
+
+            rateLimit(RateLimitName("review-writes")) {
+                // A report never hides anything; it queues the review for a moderator.
+                post("/report") {
+                    call.response.header(HttpHeaders.CacheControl, "no-store")
+                    val reviewId = call.reviewIdParam() ?: return@post
+                    val token = call.requireToken() ?: return@post
+                    if (!call.requireMaxBody(WRITE_BODY_MAX)) return@post
+                    val body = try {
+                        call.receive<ReportRequest>()
+                    } catch (_: Exception) {
+                        return@post call.reviewError(HttpStatusCode.BadRequest, "invalid_request")
+                    }
+                    val reason = body.reason?.takeIf { it in REPORT_REASONS }
+                        ?: return@post call.reviewError(Unprocessable, "invalid_reason")
+                    val note = body.note.clean()
+                    if (note != null && '\u0000' in note) return@post call.reviewError(HttpStatusCode.BadRequest, "invalid_request")
+                    if (note != null && note.codePointLength() > NOTE_MAX) return@post call.reviewError(Unprocessable, "note_too_long")
+
+                    val user = call.resolveUser(identity, token) ?: return@post
+                    if (!call.checkWriter(store, user, config, now())) return@post
+                    limits.reports.tryAcquire(user.id)?.let { return@post call.rateLimited(it) }
+                    when (store.report(reviewId, user.id, reason, note)) {
+                        ItemResult.OK -> call.respond(HttpStatusCode.Accepted)
+                        ItemResult.NOT_FOUND -> call.reviewError(HttpStatusCode.NotFound, "review_not_found")
+                        ItemResult.OWN_REVIEW -> call.reviewError(HttpStatusCode.Forbidden, "own_review")
+                    }
+                }
+
+                // One developer reply per review, from anyone with push access
+                // to the GitHub repo. Replaces the existing reply.
+                put("/reply") {
+                    call.response.header(HttpHeaders.CacheControl, "no-store")
+                    val reviewId = call.reviewIdParam() ?: return@put
+                    val token = call.requireToken() ?: return@put
+                    if (!call.requireMaxBody(WRITE_BODY_MAX)) return@put
+                    val body = try {
+                        call.receive<ReplyRequest>()
+                    } catch (_: Exception) {
+                        return@put call.reviewError(HttpStatusCode.BadRequest, "invalid_request")
+                    }
+                    val text = body.text.clean()
+                    if (text == null || '\u0000' in text) return@put call.reviewError(HttpStatusCode.BadRequest, "invalid_request")
+                    if (text.codePointLength() > TEXT_MAX) return@put call.reviewError(Unprocessable, "text_too_long")
+
+                    val user = call.resolveUser(identity, token) ?: return@put
+                    if (store.isBanned(user.id)) return@put call.reviewError(HttpStatusCode.Forbidden, "banned")
+                    val target = store.reviewRepo(reviewId)
+                        ?: return@put call.reviewError(HttpStatusCode.NotFound, "review_not_found")
+                    if (!call.requireMaintainer(identity, token, target)) return@put
+                    limits.reviews.tryAcquire(user.id)?.let { return@put call.rateLimited(it) }
+                    val reply = store.putReply(reviewId, user, text)
+                        ?: return@put call.reviewError(HttpStatusCode.NotFound, "review_not_found")
+                    call.respond(reply)
+                }
+
+                delete("/reply") {
+                    call.response.header(HttpHeaders.CacheControl, "no-store")
+                    val reviewId = call.reviewIdParam() ?: return@delete
+                    val token = call.requireToken() ?: return@delete
+                    call.resolveUser(identity, token) ?: return@delete
+                    val target = store.reviewRepo(reviewId)
+                        ?: return@delete call.reviewError(HttpStatusCode.NotFound, "review_not_found")
+                    if (!call.requireMaintainer(identity, token, target)) return@delete
+                    if (!store.deleteReply(reviewId)) return@delete call.reviewError(HttpStatusCode.NotFound, "review_not_found")
+                    call.respond(HttpStatusCode.NoContent)
+                }
+            }
+        }
     }
 }
 
@@ -151,12 +263,12 @@ private sealed interface Validated {
     class Error(val status: HttpStatusCode, val code: String) : Validated
 }
 
-private val Unprocessable = HttpStatusCode.UnprocessableEntity
+internal val Unprocessable = HttpStatusCode.UnprocessableEntity
 
 internal fun String.codePointLength(): Int = codePointCount(0, length)
 
 // Trimmed; blank becomes null.
-private fun String?.clean(): String? = this?.trim()?.takeIf { it.isNotEmpty() }
+internal fun String?.clean(): String? = this?.trim()?.takeIf { it.isNotEmpty() }
 
 private fun validateReview(body: ReviewWriteRequest): Validated {
     val rating = body.rating?.takeIf { it in 1..5 } ?: return Validated.Error(Unprocessable, "invalid_rating")
@@ -199,6 +311,39 @@ private suspend fun ApplicationCall.repoPath(forge: ForgejoResourceClient): Repo
         return null
     }
     return RepoPath(host, owner, name)
+}
+
+// Opaque review id from the path; anything malformed is simply not found.
+private suspend fun ApplicationCall.reviewIdParam(): String? {
+    val id = parameters["reviewId"]?.takeIf { REVIEW_ID_RE.matches(it) }
+    if (id == null) reviewError(HttpStatusCode.NotFound, "review_not_found")
+    return id
+}
+
+// Votes and reports: banned users and too-new accounts are refused.
+private suspend fun ApplicationCall.checkWriter(store: ReviewStore, user: GitHubUser, config: ReviewsConfig, now: Instant): Boolean {
+    val reason = ReviewEligibility.check(store.isBanned(user.id), user.createdAt, now, config.minAccountAgeDays, hasPushAccess = false)
+        ?: return true
+    reviewError(HttpStatusCode.Forbidden, reason.code)
+    return false
+}
+
+// Push access to the review's GitHub repo, looked up by numeric id so a
+// rename doesn't matter. Forge repos have no maintainers we can verify.
+private suspend fun ApplicationCall.requireMaintainer(identity: ReviewIdentity, token: String, target: RepoTarget): Boolean {
+    val githubId = target.githubId
+    if (githubId == null) {
+        reviewError(HttpStatusCode.Forbidden, "not_maintainer")
+        return false
+    }
+    return when (val result = identity.repoById(token, githubId)) {
+        is GitHubReviewClient.RepoResult.Ok -> result.repo.canPush.also {
+            if (!it) reviewError(HttpStatusCode.Forbidden, "not_maintainer")
+        }
+        GitHubReviewClient.RepoResult.NotFound -> false.also { reviewError(HttpStatusCode.Forbidden, "not_maintainer") }
+        GitHubReviewClient.RepoResult.Invalid -> false.also { reviewError(HttpStatusCode.Unauthorized, "auth_invalid") }
+        GitHubReviewClient.RepoResult.Unavailable -> false.also { reviewError(HttpStatusCode.BadGateway, "upstream_unavailable") }
+    }
 }
 
 internal suspend fun ApplicationCall.requireToken(): String? {

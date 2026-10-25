@@ -110,7 +110,7 @@ class PostgresReviewStoreIntegrationTest {
     @Test
     fun `editing a hidden review keeps it hidden and out of the aggregate`() = runBlocking {
         val review = store.putReview(app, user(1), input(1))
-        // Moderator hide, as PR 2's store does it: flag plus aggregate removal.
+        // Moderator hide (the moderation store lands next): flag plus aggregate removal.
         sql("UPDATE reviews SET hidden_at = NOW() WHERE id = '${review.id}'")
         sql("UPDATE review_repos SET review_count = 0, rating_sum = 0, stars_1 = 0")
         val edited = store.putReview(app, user(1), input(5, "changed my mind"))
@@ -216,5 +216,66 @@ class PostgresReviewStoreIntegrationTest {
         sql("INSERT INTO review_bans (github_id) VALUES (7)")
         assertTrue(store.isBanned(7))
         assertFalse(store.isBanned(8))
+    }
+
+    // ---- votes, reports, replies ----
+
+    @Test
+    fun `votes move the score by each change and refuse own or hidden reviews`() = runBlocking {
+        val id = store.putReview(app, user(1), input(5)).id
+        suspend fun score() = store.publicPage("github.com", "owner", "app", ReviewSort.TOP, null, 0, 20).reviews.single().score
+        assertEquals(ItemResult.OK, store.vote(id, 2, 1))
+        assertEquals(ItemResult.OK, store.vote(id, 2, 1))
+        assertEquals(ItemResult.OK, store.vote(id, 3, -1))
+        assertEquals(ItemResult.OK, store.vote(id, 4, -1))
+        assertEquals(-1, score())
+        assertEquals(ItemResult.OK, store.vote(id, 3, 1))
+        assertEquals(1, score(), "switching a vote moves the score by two")
+        assertEquals(ItemResult.OWN_REVIEW, store.vote(id, 1, 1))
+        assertEquals(mapOf(id to 1), store.mine(app, 3).votes)
+        assertEquals(ItemResult.OK, store.unvote(id, 2))
+        assertEquals(ItemResult.OK, store.unvote(id, 2))
+        assertEquals(0, score())
+        sql("UPDATE reviews SET hidden_at = NOW() WHERE id = '$id'")
+        assertEquals(ItemResult.NOT_FOUND, store.vote(id, 5, 1))
+        assertEquals(ItemResult.NOT_FOUND, store.vote("rv_missingMissingMissing0", 5, 1))
+    }
+
+    @Test
+    fun `concurrent votes keep score equal to the sum of votes`() = runBlocking {
+        val id = store.putReview(app, user(1), input(5)).id
+        (2L..41L).map { voter ->
+            async(Dispatchers.IO) { store.vote(id, voter, if (voter % 3 == 0L) -1 else 1) }
+        }.awaitAll()
+        val (score, sum) = query(
+            "SELECT score, (SELECT SUM(value) FROM review_votes WHERE review_id = '$id') FROM reviews WHERE id = '$id'",
+        ) { it.getInt(1) to it.getInt(2) }.single()
+        assertEquals(sum, score)
+    }
+
+    @Test
+    fun `replies are created, replaced by another maintainer and deleted`() = runBlocking {
+        val id = store.putReview(app, user(1), input(4)).id
+        val first = store.putReply(id, user(7, "maint-a"), "Thanks")!!
+        sql("UPDATE review_replies SET created_at = NOW() - INTERVAL '1 day', updated_at = NOW() - INTERVAL '1 day'")
+        val second = store.putReply(id, user(8, "maint-b"), "Fixed in v2")!!
+        assertEquals("maint-b", second.author.login)
+        assertTrue(second.createdAt < second.updatedAt, "a replaced reply keeps its createdAt")
+        assertEquals("maint-a", first.author.login)
+        val listed = store.publicPage("github.com", "owner", "app", ReviewSort.TOP, null, 0, 20).reviews.single()
+        assertEquals("Fixed in v2", listed.reply!!.text)
+        assertTrue(store.deleteReply(id))
+        assertEquals(null, store.publicPage("github.com", "owner", "app", ReviewSort.TOP, null, 0, 20).reviews.single().reply)
+        assertEquals(app, store.reviewRepo(id))
+        sql("UPDATE reviews SET hidden_at = NOW() WHERE id = '$id'")
+        assertEquals(null, store.putReply(id, user(7), "late"))
+        assertEquals(null, store.reviewRepo(id))
+    }
+
+    @Test
+    fun `forge reviews resolve to a target without a GitHub id`() = runBlocking {
+        val forge = RepoTarget("codeberg.org", null, "Owner", "App")
+        val id = store.putReview(forge, user(1), input(3)).id
+        assertEquals(forge, store.reviewRepo(id))
     }
 }
