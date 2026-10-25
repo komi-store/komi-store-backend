@@ -23,6 +23,7 @@ import zed.rainxch.githubstore.reviews.ReviewInput
 import zed.rainxch.githubstore.reviews.ReviewListResponse
 import zed.rainxch.githubstore.reviews.ReviewRateLimits
 import zed.rainxch.githubstore.reviews.ReviewSort
+import zed.rainxch.githubstore.reviews.ReviewSummariesResponse
 import zed.rainxch.githubstore.reviews.ReviewStore
 import zed.rainxch.githubstore.reviews.ReviewWriteRequest
 import zed.rainxch.githubstore.reviews.ReviewsConfig
@@ -36,6 +37,7 @@ private const val MAX_PAGE = 500
 private const val TEXT_MAX = 2000
 private const val FIELD_MAX = 128
 private const val NOTE_MAX = 500
+private const val MAX_SUMMARIES = 50
 private val REVIEW_ID_RE = Regex("^rv_[A-Za-z0-9_-]{22}$")
 private val REVIEW_PLATFORMS = setOf("android", "windows", "macos", "linux")
 
@@ -81,6 +83,27 @@ fun Route.reviewRoutes(
                     hasMore = result.hasMore,
                 ),
             )
+        }
+
+        // Rating summaries for up to 50 repos (the client's Library rows).
+        // Like the list, never reads X-GitHub-Token. Entries that aren't a
+        // valid owner/name are skipped; keys are each `r` exactly as sent.
+        get("/summaries") {
+            val requested = call.request.queryParameters.getAll("r").orEmpty()
+            if (requested.size > MAX_SUMMARIES) return@get call.reviewError(HttpStatusCode.BadRequest, "invalid_request")
+            val host = call.hostParam(forgejoResourceClient) ?: return@get
+            val keys = requested.distinct().mapNotNull { raw ->
+                val parts = raw.split('/')
+                val owner = GitHubIdentifiers.validOwner(parts.getOrNull(0))
+                val name = GitHubIdentifiers.validName(parts.getOrNull(1))
+                if (parts.size == 2 && owner != null && name != null) Triple(raw, owner, name) else null
+            }
+            val aggregates = if (keys.isEmpty()) emptyList() else store.summaries(host, keys.map { it.second to it.third })
+            val summaries = keys.zip(aggregates)
+                .mapNotNull { (key, aggregate) -> aggregate?.toRepoRating()?.let { key.first to it } }
+                .toMap()
+            call.response.header(HttpHeaders.CacheControl, "public, max-age=300, s-maxage=900")
+            call.respond(ReviewSummariesResponse(summaries))
         }
 
         get("/repo/{owner}/{name}/mine") {
@@ -304,13 +327,20 @@ private suspend fun ApplicationCall.repoPath(forge: ForgejoResourceClient): Repo
         ?: return null.also { reviewError(HttpStatusCode.BadRequest, "invalid_owner") }
     val name = GitHubIdentifiers.validName(parameters["name"])
         ?: return null.also { reviewError(HttpStatusCode.BadRequest, "invalid_name") }
+    val host = hostParam(forge) ?: return null
+    return RepoPath(host, owner, name)
+}
+
+// ?host=: github.com by default, else a trusted forge host. Responds 400
+// invalid_host and returns null otherwise.
+private suspend fun ApplicationCall.hostParam(forge: ForgejoResourceClient): String? {
     val host = request.queryParameters["host"]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
         ?: RepoTarget.GITHUB_HOST
     if (host != RepoTarget.GITHUB_HOST && !forge.isTrusted(host)) {
         reviewError(HttpStatusCode.BadRequest, "invalid_host")
         return null
     }
-    return RepoPath(host, owner, name)
+    return host
 }
 
 // Opaque review id from the path; anything malformed is simply not found.

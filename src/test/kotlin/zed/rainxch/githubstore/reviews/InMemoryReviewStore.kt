@@ -42,6 +42,13 @@ class InMemoryReviewStore : ReviewStore, ReviewModerationStore {
         ReviewPage(aggregate, filtered.drop(offset).take(limit), hasMore = filtered.size > offset + limit)
     }
 
+    private fun aggregateOf(match: (Stored) -> Boolean): RatingAggregate =
+        reviews.filter { match(it) && !it.review.hidden }.fold(RatingAggregate()) { acc, r -> acc.transition(null, r.review.rating) }
+
+    override suspend fun summaries(host: String, repos: List<Pair<String, String>>): List<RatingAggregate?> = synchronized(this) {
+        repos.map { (owner, name) -> aggregateOf { key(it.target) == key(host, owner, name) } }
+    }
+
     override suspend fun mine(target: RepoTarget, userId: Long): MyReviewState = synchronized(this) {
         val voted = votes.filterKeys { (id, voter) -> voter == userId && visible(id)?.let { key(it.target) == key(target) } == true }
         MyReviewState(
