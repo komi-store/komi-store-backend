@@ -18,6 +18,13 @@ object FeatureFlags {
     // rotation, already a strict improvement over the memoryless pools.
     val feedV2Ranking: Boolean
         get() = System.getenv("FEED_V2_RANKING")?.equals("false", ignoreCase = true) != true
+
+    // Ratings and reviews (/v1/reviews/*). Unset means on in dev and off under
+    // APP_ENV=production, so prod only serves reviews once its .env says
+    // REVIEWS_ENABLED=true. Off: the routes 404 not_found.
+    val reviewsEnabled: Boolean
+        get() = System.getenv("REVIEWS_ENABLED")?.let { it.equals("true", ignoreCase = true) }
+            ?: (System.getenv("APP_ENV") != "production")
 }
 
 // Short opaque tag for log lines that previously printed the raw query.

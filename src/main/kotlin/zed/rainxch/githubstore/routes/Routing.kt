@@ -27,6 +27,11 @@ import zed.rainxch.githubstore.mirrors.MirrorStatusRegistry
 import zed.rainxch.githubstore.oauth.OAuthEphemeralStore
 import zed.rainxch.githubstore.oauth.OAuthExchangeService
 import zed.rainxch.githubstore.oauth.OAuthServiceAuth
+import zed.rainxch.githubstore.reviews.ReviewIdentity
+import zed.rainxch.githubstore.reviews.ReviewStore
+import zed.rainxch.githubstore.reviews.ReviewsConfig
+import zed.rainxch.githubstore.reviews.WindowRateLimiter
+import kotlin.time.Duration.Companion.hours
 
 fun Application.configureRouting() {
     val repoRepository by inject<RepoRepository>()
@@ -52,6 +57,9 @@ fun Application.configureRouting() {
     val feedService by inject<FeedService>()
     val feedRepository by inject<FeedRepository>()
     val velocityWorker by inject<VelocityAggregationWorker>()
+    val reviewStore by inject<ReviewStore>()
+    val reviewIdentity by inject<ReviewIdentity>()
+    val reviewsConfig by inject<ReviewsConfig>()
 
     routing {
         rootRoutes()
@@ -95,6 +103,16 @@ fun Application.configureRouting() {
                 mirrorRoutes(mirrorStatusRegistry)
             }
             announcementsRoutes(announcementsRegistry)
+            // Ratings and reviews. Public reads sit in the global bucket only;
+            // writes take the per-IP "review-writes" bucket inside, plus
+            // per-GitHub-user limits once the token resolves.
+            reviewRoutes(
+                store = reviewStore,
+                identity = reviewIdentity,
+                forgejoResourceClient = forgejoResourceClient,
+                config = reviewsConfig,
+                reviewLimiter = WindowRateLimiter(limit = 20, window = 1.hours),
+            )
             rateLimit(RateLimitName("badges")) {
                 badgeRoutes(badgeService)
             }
