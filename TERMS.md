@@ -15,6 +15,7 @@ The service is:
 - a thin search and listing API on top of public GitHub repository data,
 - a stateless OAuth proxy for GitHub's device-flow login (`/v1/auth/device/*`),
 - a telemetry sink for the GitHub Store client app,
+- a store for public ratings and reviews of the listed apps, written by signed-in GitHub users,
 - the origin for any badge or status images we publish.
 
 The service is intentionally optional. The GitHub Store client falls back to cached JSON files on GitHub when the service is unreachable. You can build clients that never depend on us.
@@ -49,17 +50,36 @@ If you operate the GitHub Store client app or any compatible client, the same ru
 
 ---
 
+## Ratings and reviews
+
+The service stores public ratings and reviews of the apps it lists.
+
+- **Who can write.** You need to sign in with GitHub, and your GitHub account must be at least 30 days old. You can write one review per repository; writing again edits it. You can't rate a repository you have push access to.
+- **Your review is public.** It is shown with your GitHub login and avatar to anyone, signed in or not, and is cached by the CDN like other public listings.
+- **Keep it honest and about the app.** No spam or advertising. No hate speech, harassment or threats. No other people's personal data. Nothing illegal. No impersonation. No rating manipulation: no reviewing your own project through another account, no paid or traded reviews, no coordinated voting or reporting.
+- **Your words stay yours.** You keep the rights to what you write. By posting it you let us store, display, cache and distribute it through the service and the apps that use it for as long as it stays posted. Cached and backup copies expire on their own schedule, described in [`PRIVACY.md`](./PRIVACY.md).
+- **Developer replies.** Anyone with push access to the GitHub repository can post one public reply per review on behalf of the project. The same rules apply to replies.
+- **Moderation.** A report never removes a review by itself. Moderators chosen by the operator look at reports and may hide or delete a review (with its reply), and may stop an account from writing reviews, replies, votes and reports. These decisions are logged. If you think one was wrong, email `abuse@github-store.org`.
+- **Deleting.** You can delete your own review from the app at any time.
+- **Reviews are their authors' opinions**, not the operator's. We don't verify what they say.
+
+---
+
 ## Rate limits
 
 The current rate limits per endpoint are documented in `README.md`. They are enforced per IP address (with `CF-Connecting-IP` / `X-Forwarded-For` taken into account) and may change.
 
 You can supply your own GitHub Personal Access Token via the `X-GitHub-Token` header on `/v1/search` and `/v1/search/explore`. When you do, GitHub's API quota is charged against your token, not ours, and you get correspondingly more headroom on the upstream side. The backend's own per-IP rate limits still apply on top.
 
+Review writes (reviews, replies, votes and reports) are also limited per GitHub account.
+
 ---
 
 ## Right to revoke access
 
 We may block individual IPs, IP ranges, GitHub OAuth installations, or `X-GitHub-Token` values from the service if we observe behavior that violates these terms. We may do this without notice if the behavior is causing active harm (e.g., resource exhaustion, attacks). For non-urgent cases we'll usually email `abuse@github-store.org`-listed contacts first if we can identify them.
+
+We may also stop a GitHub account from writing reviews, replies, votes and reports (see "Ratings and reviews" above).
 
 If you believe you've been blocked in error, email `abuse@github-store.org` with what you were doing and we'll take a look.
 
@@ -103,4 +123,4 @@ If you're using the service from inside the EU, your local consumer-protection r
 - Security: `security@github-store.org`
 - Privacy: `privacy@github-store.org`
 
-Last updated: 2026-04-25
+Last updated: 2026-10-25
