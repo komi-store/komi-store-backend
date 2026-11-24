@@ -71,6 +71,10 @@ jobs:
             set -euo pipefail
             cd /opt/github-store-backend
             docker compose -f docker-compose.prod.yml up -d --build
+            # Same build cache cap as deploy.sh: keep the 10 GB used most
+            # recently. A failed prune must not fail the deploy.
+            docker builder prune -f --max-used-space 10gb \
+              || echo "WARN: build cache prune failed" >&2
             # Caddyfile is bind-mounted; reload picks up changes without a
             # TLS reconnect blip. Fall back to restart if reload fails.
             docker compose -f docker-compose.prod.yml exec -T caddy \

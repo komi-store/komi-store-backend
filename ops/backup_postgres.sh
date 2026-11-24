@@ -5,6 +5,10 @@
 # from the running postgres container. Output is a compressed custom-format
 # archive (pg_dump -Fc) so it restores with pg_restore.
 #
+# resource_cache is dumped schema-only (--exclude-table-data). Its rows are
+# cached GitHub responses the app refetches on demand, and including them made
+# each dump about 8.5 GB. A restore starts with an empty cache.
+#
 # Retention:
 #   - 7 days local, in $BACKUP_DIR (rotated by file mtime).
 #   - 30 days off-host, on the rclone remote (rotated by `rclone delete --min-age`).
@@ -66,7 +70,11 @@ log "Starting backup to $OUT"
 if [[ -f "$OUT" ]]; then
     log "Backup for $DATE already exists, overwriting"
 fi
-docker exec "$CONTAINER" pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$OUT.tmp"
+# A failed dump (disk full, Postgres down) must not leave a multi-GB .tmp
+# behind. After the mv there is no .tmp, so this is a no-op on success.
+trap 'rm -f "$OUT.tmp"' EXIT
+docker exec "$CONTAINER" pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc \
+    --exclude-table-data=resource_cache > "$OUT.tmp"
 mv "$OUT.tmp" "$OUT"
 
 SIZE=$(du -h "$OUT" | cut -f1)

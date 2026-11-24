@@ -90,17 +90,37 @@ open class ResourceCacheRepository {
         }
     }
 
-    // Housekeeping — drop entries nobody has touched in a long time. Called
-    // from the existing RepoRefreshWorker so we don't add a new worker for one
-    // cleanup query. Returns the row count swept for logging.
-    suspend fun sweepStale(olderThanDays: Long = 30): Int = newSuspendedTransaction(Dispatchers.IO) {
+    // Housekeeping — drop entries nobody has touched in a long time. Every
+    // full fetch and every 304 revalidation (refreshTtl) bumps fetched_at, so
+    // a row older than the cutoff hasn't been used in that long. Called daily
+    // from RetentionWorker. Returns the row count swept for logging.
+    //
+    // Postgres rejects LIMIT on DELETE, so each batch goes through a ctid
+    // subquery in its own transaction: a large backlog never becomes one long
+    // transaction. The cutoff is fixed up front so the loop always ends.
+    suspend fun sweepStale(olderThanDays: Long = 30, batchSize: Int = 10_000): Int {
         val cutoff = OffsetDateTime.now().minusDays(olderThanDays)
-        val conn = TransactionManager.current().connection.connection as java.sql.Connection
-        conn.prepareStatement(
-            "DELETE FROM resource_cache WHERE fetched_at < ?"
-        ).use { ps ->
-            ps.setObject(1, cutoff)
-            ps.executeUpdate()
+        var total = 0
+        while (true) {
+            val deleted = newSuspendedTransaction(Dispatchers.IO) {
+                val conn = TransactionManager.current().connection.connection as java.sql.Connection
+                conn.prepareStatement(
+                    """
+                    DELETE FROM resource_cache
+                    WHERE ctid IN (
+                        SELECT ctid FROM resource_cache
+                        WHERE fetched_at < ?
+                        LIMIT ?
+                    )
+                    """.trimIndent()
+                ).use { ps ->
+                    ps.setObject(1, cutoff)
+                    ps.setInt(2, batchSize)
+                    ps.executeUpdate()
+                }
+            }
+            total += deleted
+            if (deleted < batchSize) return total
         }
     }
 

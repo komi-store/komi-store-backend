@@ -10,6 +10,7 @@ import kotlinx.coroutines.launch
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.slf4j.LoggerFactory
+import zed.rainxch.githubstore.db.ResourceCacheRepository
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 
@@ -18,12 +19,17 @@ import kotlin.time.Duration.Companion.minutes
  * of the pipeline cares about. The aggregation worker already only looks back
  * 30 days; older rows are dead weight.
  *
+ * Also sweeps resource_cache rows not fetched or revalidated in 30 days
+ * (ResourceCacheRepository.sweepStale). Unswept, that cache grew to 22 GB and
+ * filled the production disk through the nightly pg_dump.
+ *
  * Postgres rejects LIMIT directly on DELETE, so we go through a CTID
  * subquery and loop in 10k-row chunks until a chunk deletes fewer rows than
  * the cap. Bounded chunks keep the WAL spike per cycle small and let the
  * advisory-lock release between iterations.
  */
 class RetentionWorker(
+    private val resourceCache: ResourceCacheRepository,
     private val supervisor: WorkerSupervisor? = null,
 ) {
     private val log = LoggerFactory.getLogger(RetentionWorker::class.java)
@@ -33,6 +39,7 @@ class RetentionWorker(
     private val cycleInterval = 24.hours
     private val chunkSize = 10_000
     private val retentionDays = 90
+    private val resourceCacheRetentionDays = 30L
 
     private val advisoryLockId: Long = 911_003L
 
@@ -51,7 +58,7 @@ class RetentionWorker(
         }
     }.also { supervisor?.register(WORKER_NAME, it) }
 
-    private fun tryRunCycle(): Boolean {
+    private suspend fun tryRunCycle(): Boolean {
         if (!acquireAdvisoryLock()) {
             log.info("Retention skipped: advisory lock held by another instance")
             return false
@@ -64,9 +71,13 @@ class RetentionWorker(
         }
     }
 
-    fun runCycle() {
+    suspend fun runCycle() {
         val eventsSwept = sweep("events")
-        log.info("Retention cycle done: events={} (>{}d)", eventsSwept, retentionDays)
+        val cacheSwept = resourceCache.sweepStale(olderThanDays = resourceCacheRetentionDays)
+        log.info(
+            "Retention cycle done: events={} (>{}d), resource_cache={} (>{}d)",
+            eventsSwept, retentionDays, cacheSwept, resourceCacheRetentionDays,
+        )
     }
 
     private fun sweep(table: String): Long {

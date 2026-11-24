@@ -72,7 +72,7 @@ val appModule = module {
     single { WorkerSupervisor() }
     single { SignalAggregationWorker(get(), get()) }
     single { RepoRefreshWorker(get(), get()) }
-    single { RetentionWorker(get()) }
+    single { RetentionWorker(get(), get()) }
     single { SnapshotRetentionWorker(get()) }
     single { VelocityAggregationWorker(get()) }
     single { SearchMetricsRegistry() }
