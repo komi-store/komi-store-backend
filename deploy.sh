@@ -25,6 +25,15 @@ rsync -avz --delete \
 echo "==> Building and starting services..."
 ssh "$SSH_USER@$SERVER_IP" "cd $REMOTE_DIR && docker compose -f docker-compose.prod.yml up -d --build"
 
+# Images are built on the server, so every deploy adds build cache; unpruned it
+# reached 42 GB. Keep the 10 GB used most recently (least recently used goes
+# first) so the next build still reuses the base-image and Gradle dependency
+# layers. --max-used-space checked against the server's Docker 29.4 / buildx
+# 0.33. A failed prune must not fail the deploy.
+echo "==> Pruning build cache..."
+ssh "$SSH_USER@$SERVER_IP" "docker builder prune -f --max-used-space 10gb" \
+    || echo "WARN: build cache prune failed" >&2
+
 # Caddyfile is mounted as a volume, so changes on disk don't auto-reload the
 # running Caddy process. Gracefully reload if the file changed since last deploy.
 # (Reload, not restart — avoids a TLS reconnect blip for live traffic.)
