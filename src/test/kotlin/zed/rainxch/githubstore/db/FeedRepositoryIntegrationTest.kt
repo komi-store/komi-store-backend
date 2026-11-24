@@ -9,7 +9,6 @@ import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.PostgreSQLContainer
 import java.time.LocalDate
 import java.time.ZoneOffset
-import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -27,33 +26,25 @@ import kotlin.test.assertTrue
 // runners always have Docker, so the smoke runs there for real.
 class FeedRepositoryIntegrationTest {
 
-    private var container: PostgreSQLContainer<*>? = null
-    private val dockerAvailable: Boolean by lazy {
-        runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)
-    }
-
     @BeforeTest
     fun setUp() {
-        // assumeTrue aborts setUp + the test (reported SKIPPED) when Docker is
-        // absent; tearDown still runs (container is null → no-op stop).
-        assumeTrue("Docker not available — skipping DB-integration smoke", dockerAvailable)
-        // Assign before start() so a start() failure still leaves a handle for
-        // tearDown to stop (Ryuk is the backstop, but don't rely on it alone).
-        container = PostgreSQLContainer("postgres:17-alpine")
-        container!!.start()
-        Database.connect(
-            url = container!!.jdbcUrl,
-            driver = "org.postgresql.Driver",
-            user = container!!.username,
-            password = container!!.password,
-        )
-        DatabaseFactory.runMigrations()
+        assumeTrue("Docker not available — skipping DB-integration smoke", database != null)
+        transaction { exec("TRUNCATE repos CASCADE") }
         seed()
     }
 
-    @AfterTest
-    fun tearDown() {
-        container?.stop()
+    private companion object {
+        // One database per class: connected per test, Exposed's per-thread manager kept the previous test's stopped container.
+        val database: Database? by lazy {
+            if (!runCatching { DockerClientFactory.instance().isDockerAvailable }.getOrDefault(false)) return@lazy null
+            val container = PostgreSQLContainer("postgres:17-alpine").apply { start() }
+            Database.connect(
+                url = container.jdbcUrl,
+                driver = "org.postgresql.Driver",
+                user = container.username,
+                password = container.password,
+            ).also { DatabaseFactory.runMigrations() }
+        }
     }
 
     @Test

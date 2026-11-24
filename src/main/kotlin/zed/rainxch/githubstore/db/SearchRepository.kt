@@ -157,9 +157,8 @@ class SearchRepository {
         results
     }
 
-    @Suppress("UNCHECKED_CAST")
     private fun SqlArray.extractStringList(): List<String> {
-        val arr = this.array as? Array<Any?> ?: return emptyList()
+        val arr = this.array as? Array<*> ?: return emptyList()
         return arr.filterIsInstance<String>()
     }
 

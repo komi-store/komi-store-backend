@@ -9,10 +9,8 @@ import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import zed.rainxch.githubstore.db.SigningFingerprints
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
+import java.util.Base64
 
-@OptIn(ExperimentalEncodingApi::class)
 open class SigningFingerprintRepository {
 
     /**
@@ -163,13 +161,13 @@ open class SigningFingerprintRepository {
     ) {
         fun encode(): String {
             val raw = "$observedAt|$fingerprint|$owner|$repo|$host"
-            return Base64.UrlSafe.encode(raw.toByteArray()).trimEnd('=')
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.toByteArray())
         }
 
         companion object {
             fun decode(token: String): PageCursor? = runCatching {
                 val padded = token.padEnd(((token.length + 3) / 4) * 4, '=')
-                val raw = Base64.UrlSafe.decode(padded).decodeToString()
+                val raw = Base64.getUrlDecoder().decode(padded).decodeToString()
                 // Accept both legacy 4-field cursors (pre-V17) and the new
                 // 5-field cursors. The 4-field form is treated as a host =
                 // "github.com" boundary, which matches the only host any
