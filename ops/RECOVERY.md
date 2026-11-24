@@ -61,6 +61,8 @@ Roughly 30–45 minutes hands-on if backups are intact and the password-manager 
        < /tmp/${LATEST%.gpg}
    ```
    Meilisearch rebuilds from Postgres on first sync, so no Meili dump is needed — the Python fetcher's `meili_sync.py` will repopulate it.
+
+   `resource_cache` comes back empty: the dump holds its schema but not its rows (`--exclude-table-data` in `ops/backup_postgres.sh`). It holds cached upstream responses (GitHub and forge proxies such as `/repo`, `/releases`, `/readme`, `/user`, plus external-match results) and refills on demand as clients request them. Expect slower first loads and more GitHub API calls on those routes for a while; nothing else is lost.
 10. **Start the app and Caddy**:
     ```bash
     docker compose -f docker-compose.prod.yml up -d --build
