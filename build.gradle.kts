@@ -73,7 +73,9 @@ dependencies {
     // Throwaway Postgres for DB-integration tests — executes the real pool /
     // sort SQL strings, the layer unit tests can't reach. Skips cleanly when
     // no Docker daemon is available (local runs without Docker still pass).
-    testImplementation("org.testcontainers:postgresql:1.20.4")
+    // 1.21.4+ speaks Docker API 1.44, the minimum Docker Engine 29 accepts;
+    // older versions find "no valid Docker environment" and every DB test skips.
+    testImplementation("org.testcontainers:postgresql:1.21.4")
 }
 
 ktor {
